@@ -1,6 +1,6 @@
 # Brand Lab
 
-A collaborative multi-agent workbench for the Kellogg–Schulich EMBA *Designing Brand Experiences* deck. Nine specialist agents (Credo, Positioning, Cast, etc.), one shared brief, and a Professor agent that picks the winning draft for each section in a tournament.
+A collaborative multi-agent workbench for the Kellogg–Schulich EMBA *Designing Brand Experiences* deck. Nine specialist agents (Credo, Positioning, Cast, etc.), one shared brief, a Professor agent that picks the winning draft for each section in a tournament, **GPT Image 2** for visuals, an **"Ashley Konson Final Read" mode** that simulates the actual professor on the whole deck, and **PowerPoint export** that bundles slides + speaker notes + generated images into a downloadable .pptx.
 
 Built to be **deployed publicly** so a whole team can use it from any device with one URL — no Claude.ai conversation needed.
 

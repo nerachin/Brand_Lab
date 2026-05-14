@@ -5,7 +5,7 @@ import {
   Play, Check, AlertCircle, Loader2, ChevronDown, ChevronRight,
   Copy, RefreshCw, FileText, Sparkles, Lock, Download, Upload, Trash2,
   ChevronsRight, BookOpen, GraduationCap, Zap, MessageSquare, Crown,
-  ArrowLeft, Send, Save, User, Plus, Trophy, Eye, GitBranch
+  ArrowLeft, Send, Save, User, Plus, Trophy, Eye, GitBranch, Image as ImageIcon, Wand2
 } from "lucide-react";
 import { AGENTS, buildBriefBlock } from "@/lib/agents";
 
@@ -576,12 +576,25 @@ function DraftListItem({ draft, isWinner, onLoad, onSetWinner, onDelete }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", background: isWinner ? "var(--olive-soft)" : "var(--paper)", border: `1px solid ${isWinner ? "var(--olive)" : "var(--border)"}`, marginBottom: 6 }}>
       {isWinner && <Crown size={14} color="var(--olive)" style={{ flexShrink: 0 }} />}
+      {draft.imageDataUrl && (
+        <img
+          src={draft.imageDataUrl}
+          alt={draft.imageDescription || "draft image"}
+          title={draft.imageDescription || ""}
+          style={{ width: 38, height: 38, objectFit: "cover", border: "1px solid var(--border)", flexShrink: 0, background: "var(--bone)" }}
+        />
+      )}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
           <span style={{ fontFamily: "'Fraunces', serif", fontSize: 15, fontWeight: 600, color: "var(--ink)" }}>{draft.name}</span>
           <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "var(--warm-gray)", letterSpacing: "0.04em" }}>
             BY {draft.author.toUpperCase()} · {new Date(draft.createdAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
           </span>
+          {draft.imageDataUrl && (
+            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "var(--clay)", letterSpacing: "0.05em", padding: "1px 5px", border: "1px solid var(--clay)" }}>
+              + IMAGE
+            </span>
+          )}
         </div>
       </div>
       <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
@@ -601,10 +614,158 @@ function DraftListItem({ draft, isWinner, onLoad, onSetWinner, onDelete }) {
   );
 }
 
+function ImageGenerator({ agent, brief, currentDraft }) {
+  const [prompt, setPrompt] = useState("");
+  const [size, setSize] = useState("1024x1024");
+  const [quality, setQuality] = useState("medium");
+  const [generating, setGenerating] = useState(false);
+  const [images, setImages] = useState([]);
+  const [error, setError] = useState(null);
+  const [expanded, setExpanded] = useState(false);
+
+  const seedPrompt = () => {
+    if (agent.id === "A6") {
+      return `Photograph of the physical brand setting for ${brief.industry || "this brand"}. Describe: interior, lighting, materials, mood, what a customer sees in the first 30 seconds.`;
+    }
+    if (agent.id === "A9") {
+      return `Advertising execution for ${brief.industry || "this brand"}. Describe the scene, subject, lighting, mood, and any text overlay (gpt-image-2 renders text well).`;
+    }
+    if (agent.id === "A1") {
+      return `Conceptual editorial illustration for ${brief.industry || "this brand"} disrupting ${brief.incumbentName || "the incumbent"}.`;
+    }
+    return `Visual for the ${agent.name} slide. Describe what you want to see.`;
+  };
+
+  const seedFromDraft = () => {
+    if (!currentDraft) {
+      alert("No current draft to seed from. Iterate in the chat first or fork a saved draft.");
+      return;
+    }
+    // Very simple extraction: just put the draft content into the prompt area
+    setPrompt(`Based on this slide content, generate a visual:\n\n${currentDraft.slice(0, 800)}\n\nStyle: editorial, magazine quality, on-brand.`);
+  };
+
+  const generate = async () => {
+    if (!prompt.trim() || generating) return;
+    setGenerating(true);
+    setError(null);
+    try {
+      const result = await api("/api/image", { prompt: prompt.trim(), size, quality });
+      if (result.error) throw new Error(result.error);
+      setImages([{ src: result.image, prompt: prompt.trim(), id: Date.now(), size }, ...images]);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const download = (img) => {
+    const a = document.createElement("a");
+    a.href = img.src;
+    a.download = `${agent.id}_${img.id}.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  return (
+    <div style={{ marginBottom: 24 }}>
+      <div
+        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, cursor: "pointer" }}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <h3 style={{ fontFamily: "'Fraunces', serif", fontSize: 17, fontWeight: 600, margin: 0, color: "var(--ink)", display: "flex", alignItems: "center", gap: 8 }}>
+          <Wand2 size={15} color="var(--clay)" /> Visuals
+          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "var(--warm-gray)", letterSpacing: "0.05em", fontWeight: 400 }}>
+            GPT IMAGE 2{images.length > 0 ? ` · ${images.length} GENERATED` : ""}
+          </span>
+        </h3>
+        {expanded ? <ChevronDown size={16} color="var(--warm-gray)" /> : <ChevronRight size={16} color="var(--warm-gray)" />}
+      </div>
+
+      {expanded && (
+        <>
+          {images.length > 0 && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12, marginBottom: 14 }}>
+              {images.map((img) => (
+                <div key={img.id} style={{ background: "var(--paper)", border: "1px solid var(--border)", padding: 8 }}>
+                  <img src={img.src} alt={img.prompt} style={{ width: "100%", display: "block", aspectRatio: img.size === "1024x1024" ? "1/1" : img.size === "1536x1024" ? "3/2" : "2/3", objectFit: "cover" }} />
+                  <div style={{ fontSize: 11, color: "var(--warm-gray)", padding: "6px 2px 4px", fontStyle: "italic", lineHeight: 1.4 }}>
+                    {img.prompt.length > 100 ? img.prompt.slice(0, 100) + "…" : img.prompt}
+                  </div>
+                  <button onClick={() => download(img)} style={{ width: "100%", background: "transparent", border: "1px solid var(--border)", color: "var(--ink-soft)", padding: "5px", cursor: "pointer", fontSize: 10, letterSpacing: "0.05em", fontFamily: "'JetBrains Mono', monospace" }}>
+                    <Download size={10} style={{ display: "inline", marginRight: 4, verticalAlign: "middle" }} /> DOWNLOAD PNG
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ background: "var(--paper)", border: "1px solid var(--border)", padding: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+              <label style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, letterSpacing: "0.1em", color: "var(--clay)", fontWeight: 600, textTransform: "uppercase" }}>
+                Image Prompt
+              </label>
+              {currentDraft && (
+                <button onClick={seedFromDraft} style={{ background: "transparent", border: "1px solid var(--border)", color: "var(--ink-soft)", padding: "3px 8px", cursor: "pointer", fontSize: 10, letterSpacing: "0.05em", fontFamily: "'JetBrains Mono', monospace" }}>
+                  SEED FROM CURRENT DRAFT
+                </button>
+              )}
+            </div>
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder={seedPrompt()}
+              rows={4}
+              disabled={generating}
+              style={{ width: "100%", background: "var(--bone-light)", border: "1px solid var(--border)", padding: "8px 10px", fontSize: 13, fontFamily: "'Newsreader', Georgia, serif", outline: "none", resize: "vertical", boxSizing: "border-box", marginBottom: 10 }}
+            />
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <select value={size} onChange={(e) => setSize(e.target.value)} disabled={generating} style={{ background: "var(--bone-light)", border: "1px solid var(--border)", padding: "6px 8px", fontSize: 11, fontFamily: "'JetBrains Mono', monospace" }}>
+                <option value="1024x1024">1024×1024 ◻ square</option>
+                <option value="1536x1024">1536×1024 ▭ landscape</option>
+                <option value="1024x1536">1024×1536 ▯ portrait</option>
+              </select>
+              <select value={quality} onChange={(e) => setQuality(e.target.value)} disabled={generating} style={{ background: "var(--bone-light)", border: "1px solid var(--border)", padding: "6px 8px", fontSize: 11, fontFamily: "'JetBrains Mono', monospace" }}>
+                <option value="low">Low quality · fast</option>
+                <option value="medium">Medium quality</option>
+                <option value="high">High quality · slow</option>
+              </select>
+              <button
+                onClick={generate}
+                disabled={!prompt.trim() || generating}
+                style={{ marginLeft: "auto", background: prompt.trim() && !generating ? "var(--clay)" : "var(--border)", color: prompt.trim() && !generating ? "var(--bone)" : "var(--warm-gray)", border: "none", padding: "8px 16px", cursor: prompt.trim() && !generating ? "pointer" : "not-allowed", fontSize: 11, display: "flex", alignItems: "center", gap: 6, letterSpacing: "0.06em", textTransform: "uppercase" }}
+              >
+                {generating ? <Loader2 size={12} className="spin-icon" /> : <Sparkles size={12} />}
+                {generating ? "GENERATING…" : "GENERATE IMAGE"}
+              </button>
+            </div>
+            {error && (
+              <div style={{ marginTop: 10, color: "var(--rose)", fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }}>
+                ⚠ {error}
+              </div>
+            )}
+            <div style={{ marginTop: 8, fontSize: 11, color: "var(--warm-gray)", fontStyle: "italic" }}>
+              High quality at 1024×1024 takes 30–90 seconds. Images live in your browser only — download to save and share via Slack.
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, workspace, onBack, onSendMessage, onSaveDraft, onSetWinner, onDeleteDraft, onLoadDraft, onRunTournament, tournamentResult, isWaiting, refreshing, onRefresh }) {
   const [input, setInput] = useState("");
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [draftName, setDraftName] = useState("");
+  const [includeImage, setIncludeImage] = useState(false);
+  const [imageDescription, setImageDescription] = useState("");
+  const [imageSize, setImageSize] = useState("1536x1024");
+  const [imageQuality, setImageQuality] = useState("medium");
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [saveError, setSaveError] = useState(null);
   const chatRef = useRef(null);
 
   const chatHistory = workspace?.chatHistory || [];
@@ -624,9 +785,32 @@ function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, w
 
   const handleSave = async () => {
     if (!draftName.trim() || !currentDraft) return;
-    await onSaveDraft(draftName.trim(), currentDraft);
-    setDraftName("");
-    setShowSaveModal(false);
+    setSavingDraft(true);
+    setSaveError(null);
+    try {
+      let imageDataUrl = null;
+      let imageDesc = null;
+      if (includeImage && imageDescription.trim()) {
+        // Generate image first
+        const imgResult = await api("/api/image", {
+          prompt: imageDescription.trim(),
+          size: imageSize,
+          quality: imageQuality,
+        });
+        if (imgResult.error) throw new Error(`Image generation failed: ${imgResult.error}`);
+        imageDataUrl = imgResult.image;
+        imageDesc = imageDescription.trim();
+      }
+      await onSaveDraft(draftName.trim(), currentDraft, imageDataUrl, imageDesc);
+      setDraftName("");
+      setIncludeImage(false);
+      setImageDescription("");
+      setShowSaveModal(false);
+    } catch (e) {
+      setSaveError(e.message);
+    } finally {
+      setSavingDraft(false);
+    }
   };
 
   const upstreamReady = agent.deps.every((d) => upstreamLocks[d]);
@@ -704,6 +888,8 @@ function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, w
         </div>
       )}
 
+      <ImageGenerator agent={agent} brief={brief} currentDraft={currentDraft} />
+
       <div style={{ background: "var(--paper)", border: "1px solid var(--border)" }}>
         <div style={{ padding: "12px 18px", borderBottom: "1px solid var(--border)", background: "var(--bone-light)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "var(--clay)", letterSpacing: "0.1em", fontWeight: 600 }}>
@@ -766,7 +952,7 @@ function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, w
 
       {showSaveModal && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,26,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 20 }}>
-          <div className="fade-in" style={{ background: "var(--bone)", maxWidth: 460, width: "100%", padding: "28px 32px", border: "1px solid var(--ink)" }}>
+          <div className="fade-in" style={{ background: "var(--bone)", maxWidth: 540, width: "100%", padding: "28px 32px", border: "1px solid var(--ink)", maxHeight: "90vh", overflowY: "auto" }}>
             <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.2em", color: "var(--clay)", marginBottom: 10, textTransform: "uppercase" }}>
               SAVE DRAFT TO TEAM POOL
             </div>
@@ -780,16 +966,73 @@ function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, w
               autoFocus
               value={draftName}
               onChange={(e) => setDraftName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && draftName.trim()) handleSave(); }}
               placeholder="e.g. Bold WWE v1"
-              style={{ width: "100%", background: "var(--paper)", border: "1px solid var(--border)", padding: "9px 12px", fontSize: 15, marginBottom: 14, outline: "none", boxSizing: "border-box" }}
+              disabled={savingDraft}
+              style={{ width: "100%", background: "var(--paper)", border: "1px solid var(--border)", padding: "9px 12px", fontSize: 15, marginBottom: 16, outline: "none", boxSizing: "border-box" }}
             />
+
+            <div style={{ background: "var(--paper)", border: "1px solid var(--border)", padding: 14, marginBottom: 14 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", marginBottom: includeImage ? 12 : 0 }}>
+                <input
+                  type="checkbox"
+                  checked={includeImage}
+                  onChange={(e) => setIncludeImage(e.target.checked)}
+                  disabled={savingDraft}
+                  style={{ width: 16, height: 16, accentColor: "var(--clay)" }}
+                />
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.1em", color: "var(--ink)", fontWeight: 600, textTransform: "uppercase" }}>
+                  GENERATE & ATTACH IMAGE (gpt-image-2)
+                </span>
+              </label>
+              {includeImage && (
+                <>
+                  <label style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, letterSpacing: "0.08em", color: "var(--clay)", fontWeight: 600, textTransform: "uppercase", display: "block", marginBottom: 5 }}>
+                    Describe the image
+                  </label>
+                  <textarea
+                    value={imageDescription}
+                    onChange={(e) => setImageDescription(e.target.value)}
+                    placeholder={
+                      agent.id === "A6" ? "e.g. Editorial photograph of the physical brand setting — interior, lighting, materials, mood..."
+                      : agent.id === "A9" ? "e.g. The advertising execution — scene, subject, mood, any text overlay..."
+                      : `e.g. Visual for the ${agent.name} slide — what you want to see.`
+                    }
+                    rows={3}
+                    disabled={savingDraft}
+                    style={{ width: "100%", background: "var(--bone-light)", border: "1px solid var(--border)", padding: "8px 10px", fontSize: 13, outline: "none", resize: "vertical", boxSizing: "border-box", marginBottom: 10, fontFamily: "'Newsreader', Georgia, serif" }}
+                  />
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <select value={imageSize} onChange={(e) => setImageSize(e.target.value)} disabled={savingDraft} style={{ background: "var(--bone-light)", border: "1px solid var(--border)", padding: "5px 8px", fontSize: 11, fontFamily: "'JetBrains Mono', monospace" }}>
+                      <option value="1024x1024">Square 1024×1024</option>
+                      <option value="1536x1024">Landscape 1536×1024</option>
+                      <option value="1024x1536">Portrait 1024×1536</option>
+                    </select>
+                    <select value={imageQuality} onChange={(e) => setImageQuality(e.target.value)} disabled={savingDraft} style={{ background: "var(--bone-light)", border: "1px solid var(--border)", padding: "5px 8px", fontSize: 11, fontFamily: "'JetBrains Mono', monospace" }}>
+                      <option value="low">Low quality · fast</option>
+                      <option value="medium">Medium quality</option>
+                      <option value="high">High quality · slow</option>
+                    </select>
+                  </div>
+                  <div style={{ marginTop: 8, fontSize: 11, color: "var(--warm-gray)", fontStyle: "italic" }}>
+                    Adds 30–90s to save time. Image stored with the draft, included in the PowerPoint export.
+                  </div>
+                </>
+              )}
+            </div>
+
+            {saveError && (
+              <div style={{ color: "var(--rose)", fontSize: 12, marginBottom: 12, fontFamily: "'JetBrains Mono', monospace", padding: "8px 10px", border: "1px solid var(--rose)" }}>
+                ⚠ {saveError}
+              </div>
+            )}
+
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button onClick={() => setShowSaveModal(false)} style={{ background: "transparent", border: "1px solid var(--border)", color: "var(--ink-soft)", padding: "9px 16px", cursor: "pointer", fontSize: 11, letterSpacing: "0.06em" }}>
+              <button onClick={() => setShowSaveModal(false)} disabled={savingDraft} style={{ background: "transparent", border: "1px solid var(--border)", color: "var(--ink-soft)", padding: "9px 16px", cursor: savingDraft ? "not-allowed" : "pointer", fontSize: 11, letterSpacing: "0.06em" }}>
                 CANCEL
               </button>
-              <button onClick={handleSave} disabled={!draftName.trim()} style={{ background: draftName.trim() ? "var(--clay)" : "var(--border)", color: draftName.trim() ? "var(--bone)" : "var(--warm-gray)", border: "none", padding: "9px 18px", cursor: draftName.trim() ? "pointer" : "not-allowed", fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase" }}>
-                SAVE
+              <button onClick={handleSave} disabled={!draftName.trim() || savingDraft || (includeImage && !imageDescription.trim())} style={{ background: draftName.trim() && !savingDraft ? "var(--clay)" : "var(--border)", color: draftName.trim() && !savingDraft ? "var(--bone)" : "var(--warm-gray)", border: "none", padding: "9px 18px", cursor: draftName.trim() && !savingDraft ? "pointer" : "not-allowed", fontSize: 11, letterSpacing: "0.06em", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6 }}>
+                {savingDraft && <Loader2 size={11} className="spin-icon" />}
+                {savingDraft ? (includeImage ? "GENERATING IMAGE…" : "SAVING…") : "SAVE"}
               </button>
             </div>
           </div>
@@ -800,6 +1043,11 @@ function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, w
 }
 
 function ExportView({ brief, draftsByAgent, winners }) {
+  const [ashleyReview, setAshleyReview] = useState(null);
+  const [runningAshley, setRunningAshley] = useState(false);
+  const [ashleyError, setAshleyError] = useState(null);
+  const [pptStatus, setPptStatus] = useState("idle");
+
   const buildDeck = () => {
     let md = `# Brand Experience Deck\n\n## Brief\n`;
     md += `- **Product:** ${brief.productIdea || "—"}\n`;
@@ -822,6 +1070,244 @@ function ExportView({ brief, draftsByAgent, winners }) {
     return md;
   };
 
+  const getWinningDrafts = () => {
+    const result = {};
+    for (const agent of AGENTS) {
+      const agentDrafts = draftsByAgent[agent.id] || [];
+      const winnerId = winners[agent.id];
+      const winning = winnerId ? agentDrafts.find((d) => d.id === winnerId) : agentDrafts[agentDrafts.length - 1];
+      if (winning) result[agent.id] = winning;
+    }
+    return result;
+  };
+
+  const runAshleyFinalReview = async () => {
+    setRunningAshley(true);
+    setAshleyError(null);
+    setAshleyReview(null);
+    try {
+      const winning = getWinningDrafts();
+      if (Object.keys(winning).length === 0) {
+        throw new Error("No drafts to review yet. Save at least one draft per section first.");
+      }
+      let promptText = "## THE DECK FOR YOUR FINAL READ\n\n";
+      promptText += "### Brief\n";
+      promptText += `- Product: ${brief.productIdea || "[unspecified]"}\n`;
+      promptText += `- Industry: ${brief.industry || "[unspecified]"}\n`;
+      promptText += `- Incumbent being disrupted: ${brief.incumbentName || "[unspecified]"}\n`;
+      promptText += `- Disruption vector: ${brief.disruptionVector || "[unspecified]"}\n`;
+      promptText += `- Geography: ${brief.geography || "[unspecified]"}\n`;
+      if (brief.founderStory) promptText += `- Founder story: ${brief.founderStory}\n`;
+      promptText += "\n";
+      for (const agent of AGENTS) {
+        const draft = winning[agent.id];
+        if (draft) {
+          promptText += `### ${agent.id} — ${agent.name} (${agent.weight}, ${agent.band} band)\n`;
+          promptText += `*Author: ${draft.author}${draft.id === winners[agent.id] ? " · TOURNAMENT WINNER" : " · most recent (no tournament run)"}*\n\n`;
+          promptText += draft.content + "\n\n";
+          if (draft.imageDescription) {
+            promptText += `*Slide image: "${draft.imageDescription}"*\n\n`;
+          }
+          promptText += "---\n\n";
+        } else {
+          promptText += `### ${agent.id} — ${agent.name} (${agent.weight})\n*No draft saved for this section.*\n\n---\n\n`;
+        }
+      }
+      promptText += "\nNow give me your final read, Ashley. Don't soften.";
+
+      const { text } = await callClaude("ashley_final", { promptText });
+      setAshleyReview(text);
+    } catch (e) {
+      setAshleyError(e.message);
+    } finally {
+      setRunningAshley(false);
+    }
+  };
+
+  const generatePowerPoint = async () => {
+    setPptStatus("generating");
+    try {
+      // Dynamic import to keep client bundle slim
+      const PptxGenJS = (await import("pptxgenjs")).default;
+      const pptx = new PptxGenJS();
+
+      pptx.layout = "LAYOUT_WIDE"; // 13.33 x 7.5"
+      pptx.title = `${brief.productIdea?.slice(0, 60) || "Brand Experience Deck"}`;
+
+      // Colors aligned with the app's design tokens
+      const INK = "1A1A1A";
+      const CLAY = "B8472A";
+      const BONE = "F4EFE6";
+      const WARM_GRAY = "8A8478";
+
+      // ===== Title slide =====
+      const title = pptx.addSlide();
+      title.background = { color: BONE };
+      title.addText("Designing Brand Experiences", {
+        x: 0.7, y: 1.2, w: 12, h: 0.5,
+        fontFace: "Calibri",
+        fontSize: 14, color: CLAY, bold: true,
+      });
+      title.addText(brief.productIdea?.slice(0, 100) || "[Product idea]", {
+        x: 0.7, y: 1.9, w: 12, h: 2.5,
+        fontFace: "Georgia",
+        fontSize: 44, color: INK, bold: true, italic: false,
+      });
+      title.addText(
+        [
+          { text: "Disrupting ", options: { color: INK } },
+          { text: brief.incumbentName || "[incumbent]", options: { color: CLAY, bold: true } },
+          { text: " in ", options: { color: INK } },
+          { text: brief.industry || "[industry]", options: { color: INK, bold: true } },
+          { text: ` via ${brief.disruptionVector || "[vector]"}`, options: { color: INK } },
+        ],
+        { x: 0.7, y: 5.0, w: 12, h: 0.7, fontFace: "Georgia", fontSize: 22, italic: true }
+      );
+      title.addText("KELLOGG–SCHULICH EMBA · DESIGNING BRAND EXPERIENCES", {
+        x: 0.7, y: 6.7, w: 12, h: 0.3, fontFace: "Calibri",
+        fontSize: 10, color: WARM_GRAY, charSpacing: 4,
+      });
+
+      // ===== Helper: parse a slide block into title + body =====
+      const parseSlideContent = (content) => {
+        // Split into slide blocks (separated by --- standalone lines)
+        const blocks = content.split(/^---$/m).map((s) => s.trim()).filter(Boolean);
+        return blocks.map((block) => {
+          const lines = block.split("\n");
+          let slideTitle = "";
+          let mustSay = "";
+          let body = block;
+          for (const line of lines) {
+            const t = line.trim();
+            if (t.startsWith("# ")) {
+              slideTitle = t.slice(2).replace(/^Slide\s*[A-Z]*\s*[:\-]*\s*/i, "").trim();
+              break;
+            }
+          }
+          const mustSayMatch = block.match(/\*\*Must-say:\*\*\s*(.+)/i);
+          if (mustSayMatch) mustSay = mustSayMatch[1].trim();
+          return { title: slideTitle || "Slide", mustSay, body };
+        });
+      };
+
+      // Clean markdown for rendering on slides — keep things tight
+      const stripMarkdown = (s) => {
+        return s
+          .replace(/^#+\s+/gm, "")
+          .replace(/\*\*(.+?)\*\*/g, "$1")
+          .replace(/\*(.+?)\*/g, "$1")
+          .replace(/^\s*-\s+/gm, "• ")
+          .replace(/^\s*\|.*\|$/gm, "") // strip table rows (handled separately if needed)
+          .replace(/\n{3,}/g, "\n\n");
+      };
+
+      const winningDrafts = getWinningDrafts();
+
+      for (const agent of AGENTS) {
+        const draft = winningDrafts[agent.id];
+        if (!draft) continue;
+
+        const blocks = parseSlideContent(draft.content);
+
+        for (let bi = 0; bi < blocks.length; bi++) {
+          const block = blocks[bi];
+          const slide = pptx.addSlide();
+          slide.background = { color: "FFFFFF" };
+
+          // Header bar
+          slide.addText(`${agent.id} · ${agent.name.toUpperCase()} · ${agent.weight}`, {
+            x: 0.5, y: 0.3, w: 12.3, h: 0.3,
+            fontFace: "Calibri", fontSize: 10, color: CLAY, bold: true, charSpacing: 3,
+          });
+
+          // Title
+          slide.addText(block.title, {
+            x: 0.5, y: 0.65, w: 12.3, h: 0.7,
+            fontFace: "Georgia", fontSize: 28, color: INK, bold: true,
+          });
+
+          // Divider
+          slide.addShape("line", {
+            x: 0.5, y: 1.5, w: 1.0, h: 0,
+            line: { color: CLAY, width: 2 },
+          });
+
+          // Layout: text on left, image on right if available
+          const hasImage = !!(draft.imageDataUrl && bi === 0);
+          const textW = hasImage ? 7.0 : 12.3;
+
+          // Strip out the heading and metadata lines for the body
+          let bodyText = block.body;
+          // Remove the first heading line
+          bodyText = bodyText.replace(/^#.+\n/, "");
+          // Remove the metadata lines (Rubric, Must-say, Talk time) — but keep the must-say as a callout
+          bodyText = bodyText.replace(/^\*\*Rubric:\*\*.*\n/gm, "");
+          bodyText = bodyText.replace(/^\*\*Talk time:\*\*.*\n/gm, "");
+          bodyText = bodyText.replace(/^\*\*Must-say:\*\*.*\n/gm, "");
+          // Remove "Speaker notes" and "Visual direction" sections — they go to notes
+          bodyText = bodyText.split(/##\s+(Speaker notes|Visual direction|Risks)/i)[0];
+
+          if (block.mustSay) {
+            slide.addText(`"${block.mustSay}"`, {
+              x: 0.5, y: 1.7, w: textW, h: 0.6,
+              fontFace: "Georgia", fontSize: 14, color: CLAY, italic: true,
+            });
+          }
+
+          slide.addText(stripMarkdown(bodyText).slice(0, 1800), {
+            x: 0.5, y: block.mustSay ? 2.4 : 1.7, w: textW, h: block.mustSay ? 4.5 : 5.2,
+            fontFace: "Calibri", fontSize: 12, color: INK, valign: "top",
+            paraSpaceAfter: 4,
+          });
+
+          if (hasImage) {
+            try {
+              slide.addImage({
+                data: draft.imageDataUrl,
+                x: 7.8, y: 1.7, w: 5.0, h: 5.2,
+                sizing: { type: "contain", w: 5.0, h: 5.2 },
+              });
+            } catch (e) {
+              console.warn("Failed to embed image:", e);
+            }
+          }
+
+          // Speaker notes — extract the "Speaker notes" section
+          const speakerNotesMatch = draft.content.match(/##\s+Speaker notes\s*\n([\s\S]+?)(?=\n##|$)/i);
+          if (speakerNotesMatch) {
+            slide.addNotes(stripMarkdown(speakerNotesMatch[1].trim()));
+          }
+
+          // Footer
+          slide.addText(`${agent.band} band · ${agent.weight} of grade`, {
+            x: 0.5, y: 7.1, w: 12.3, h: 0.3,
+            fontFace: "Calibri", fontSize: 9, color: WARM_GRAY, charSpacing: 2,
+          });
+        }
+      }
+
+      // ===== Closing slide =====
+      const closing = pptx.addSlide();
+      closing.background = { color: INK };
+      closing.addText("Thank you.", {
+        x: 0.7, y: 3, w: 12, h: 1.5,
+        fontFace: "Georgia", fontSize: 60, color: BONE, italic: true,
+      });
+      closing.addText("Questions?", {
+        x: 0.7, y: 4.5, w: 12, h: 0.5,
+        fontFace: "Calibri", fontSize: 18, color: CLAY,
+      });
+
+      await pptx.writeFile({ fileName: `brand_lab_deck_${Date.now()}.pptx` });
+      setPptStatus("done");
+      setTimeout(() => setPptStatus("idle"), 4000);
+    } catch (e) {
+      console.error(e);
+      alert("PowerPoint generation failed: " + e.message);
+      setPptStatus("idle");
+    }
+  };
+
   const fullMd = buildDeck();
   const winnerCount = Object.keys(winners).length;
   const draftedCount = AGENTS.filter((a) => (draftsByAgent[a.id] || []).length > 0).length;
@@ -830,19 +1316,89 @@ function ExportView({ brief, draftsByAgent, winners }) {
     <div className="fade-in" style={{ maxWidth: 1000, margin: "0 auto", padding: "32px 28px 80px" }}>
       <div style={{ marginBottom: 24 }}>
         <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "var(--clay)", letterSpacing: "0.2em", marginBottom: 8, textTransform: "uppercase" }}>
-          STEP 03 · EXPORT
+          STEP 03 · EXPORT & FINAL REVIEW
         </div>
         <h2 style={{ fontFamily: "'Fraunces', Georgia, serif", fontSize: 30, fontWeight: 600, margin: "0 0 10px", letterSpacing: "-0.01em" }}>
-          The winning drafts, <em style={{ color: "var(--clay)" }}>compiled.</em>
+          Ship the deck. <em style={{ color: "var(--clay)" }}>Or hand it to Ashley first.</em>
         </h2>
         <p style={{ color: "var(--ink-soft)", lineHeight: 1.6 }}>
-          {winnerCount} winners picked · {draftedCount} of {AGENTS.length} sections drafted. Copy this into PowerPoint, Google Slides, or Keynote.
+          {winnerCount} winners picked · {draftedCount} of {AGENTS.length} sections drafted.
         </p>
       </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 22, flexWrap: "wrap" }}>
-        <button onClick={() => navigator.clipboard.writeText(fullMd)} style={{ background: "var(--ink)", color: "var(--bone)", border: "none", padding: "10px 18px", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 8, letterSpacing: "0.06em", textTransform: "uppercase" }}>
-          <Copy size={13} /> COPY ENTIRE DECK
+      {/* === Ashley's Final Read === */}
+      <div style={{ background: "var(--paper)", border: "1px solid var(--ink)", borderLeft: "4px solid var(--clay)", padding: "24px 28px", marginBottom: 28 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+          <GraduationCap size={18} color="var(--clay)" />
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.15em", color: "var(--clay)", fontWeight: 600 }}>
+            ASHLEY KONSON · PROFESSOR MODE
+          </div>
+        </div>
+        <h3 style={{ fontFamily: "'Fraunces', serif", fontSize: 24, fontWeight: 600, margin: "0 0 8px", letterSpacing: "-0.01em" }}>
+          Ashley's Final Read
+        </h3>
+        <p style={{ color: "var(--ink-soft)", fontSize: 14, marginBottom: 16, lineHeight: 1.6, maxWidth: 720 }}>
+          Send the entire winning deck — all nine sections — to Ashley for a holistic review. He'll check narrative coherence across the brand promise, run the iceberg test (does the visible experience anchor to the strategic foundation?), score every section against the rubric, pick his favorite element of your work, give you the live-pitch question he'd ask, and predict a letter grade.
+        </p>
+        <button
+          onClick={runAshleyFinalReview}
+          disabled={runningAshley || winnerCount === 0}
+          style={{
+            background: !runningAshley && winnerCount > 0 ? "var(--ink)" : "var(--border)",
+            color: !runningAshley && winnerCount > 0 ? "var(--bone)" : "var(--warm-gray)",
+            border: "none", padding: "11px 22px",
+            cursor: !runningAshley && winnerCount > 0 ? "pointer" : "not-allowed",
+            fontSize: 12, display: "inline-flex", alignItems: "center", gap: 8,
+            letterSpacing: "0.06em", textTransform: "uppercase",
+          }}
+        >
+          {runningAshley ? <Loader2 size={13} className="spin-icon" /> : <Sparkles size={13} />}
+          {runningAshley ? "ASHLEY IS READING THE DECK…" : "RUN ASHLEY'S FINAL READ"}
+        </button>
+        {winnerCount === 0 && (
+          <span style={{ marginLeft: 12, fontSize: 12, color: "var(--warm-gray)", fontStyle: "italic" }}>
+            Save at least one draft per section first.
+          </span>
+        )}
+        {ashleyError && (
+          <div style={{ marginTop: 14, color: "var(--rose)", fontSize: 13, fontFamily: "'JetBrains Mono', monospace" }}>
+            ⚠ {ashleyError}
+          </div>
+        )}
+        {ashleyReview && (
+          <div style={{ marginTop: 22, background: "var(--bone-light)", border: "1px solid var(--border)", padding: "24px 28px" }}>
+            <MarkdownView content={ashleyReview} />
+            <button
+              onClick={() => navigator.clipboard.writeText(ashleyReview)}
+              style={{ marginTop: 14, background: "transparent", border: "1px solid var(--border)", color: "var(--ink-soft)", padding: "6px 12px", cursor: "pointer", fontSize: 10, letterSpacing: "0.05em", display: "inline-flex", alignItems: "center", gap: 6 }}
+            >
+              <Copy size={10} /> COPY ASHLEY'S REVIEW
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* === Export buttons === */}
+      <h3 style={{ fontFamily: "'Fraunces', serif", fontSize: 22, fontWeight: 600, margin: "0 0 14px", letterSpacing: "-0.01em" }}>
+        Export
+      </h3>
+      <div style={{ display: "flex", gap: 10, marginBottom: 22, flexWrap: "wrap" }}>
+        <button
+          onClick={generatePowerPoint}
+          disabled={pptStatus === "generating" || draftedCount === 0}
+          style={{
+            background: pptStatus === "done" ? "var(--olive)" : pptStatus === "generating" ? "var(--clay)" : "var(--ink)",
+            color: "var(--bone)", border: "none", padding: "11px 20px",
+            cursor: pptStatus === "generating" || draftedCount === 0 ? "not-allowed" : "pointer",
+            fontSize: 12, display: "flex", alignItems: "center", gap: 8,
+            letterSpacing: "0.06em", textTransform: "uppercase",
+          }}
+        >
+          {pptStatus === "generating" ? <Loader2 size={13} className="spin-icon" /> : pptStatus === "done" ? <Check size={13} /> : <FileText size={13} />}
+          {pptStatus === "generating" ? "BUILDING DECK…" : pptStatus === "done" ? "DOWNLOADED" : "DOWNLOAD POWERPOINT"}
+        </button>
+        <button onClick={() => navigator.clipboard.writeText(fullMd)} style={{ background: "transparent", border: "1px solid var(--ink)", color: "var(--ink)", padding: "10px 18px", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 8, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+          <Copy size={13} /> COPY MARKDOWN
         </button>
         <button
           onClick={() => {
@@ -1026,7 +1582,7 @@ export default function Page() {
     }
   };
 
-  const saveDraft = async (agentId, name, content) => {
+  const saveDraft = async (agentId, name, content, imageDataUrl, imageDescription) => {
     const draftId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const draft = {
       id: draftId,
@@ -1036,6 +1592,10 @@ export default function Page() {
       author: user.handle,
       createdAt: Date.now(),
     };
+    if (imageDataUrl) {
+      draft.imageDataUrl = imageDataUrl;
+      draft.imageDescription = imageDescription || "";
+    }
     try {
       await callStorage("saveDraft", { draft });
       setDraftsByAgent((prev) => ({
@@ -1043,7 +1603,8 @@ export default function Page() {
         [agentId]: [...(prev[agentId] || []), draft],
       }));
     } catch (e) {
-      alert("Failed to save draft: " + e.message);
+      // Re-throw so the modal can show it
+      throw new Error("Failed to save draft: " + e.message);
     }
   };
 
@@ -1179,7 +1740,7 @@ export default function Page() {
               workspace={workspaces[openAgentId]}
               onBack={() => setOpenAgentId(null)}
               onSendMessage={(msg) => sendAgentMessage(openAgentId, msg)}
-              onSaveDraft={(name, content) => saveDraft(openAgentId, name, content)}
+              onSaveDraft={(name, content, imgUrl, imgDesc) => saveDraft(openAgentId, name, content, imgUrl, imgDesc)}
               onSetWinner={(draftId) => setDraftAsWinner(openAgentId, draftId)}
               onDeleteDraft={(draftId) => deleteDraft(openAgentId, draftId)}
               onLoadDraft={(draft) => loadDraftIntoWorkspace(openAgentId, draft)}

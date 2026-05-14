@@ -1,9 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { AGENTS, buildSystemPromptForAgent } from "@/lib/agents";
-import { PROFESSOR_PROMPT, TOURNAMENT_PROMPT } from "@/lib/prompts";
+import { PROFESSOR_PROMPT, TOURNAMENT_PROMPT, ASHLEY_FINAL_REVIEW_PROMPT } from "@/lib/prompts";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 60;
 
 function getClient() {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -15,7 +15,7 @@ function getClient() {
 
 // Default model — sensible choice for cost/quality balance.
 // Override via ANTHROPIC_MODEL env var if you want Opus.
-const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL || "claude-opus-4-6";
+const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5-20250929";
 
 export async function POST(request) {
   try {
@@ -44,6 +44,10 @@ export async function POST(request) {
     } else if (mode === "professor") {
       const { promptText } = body;
       system = PROFESSOR_PROMPT;
+      messages = [{ role: "user", content: promptText }];
+    } else if (mode === "ashley_final") {
+      const { promptText } = body;
+      system = ASHLEY_FINAL_REVIEW_PROMPT;
       messages = [{ role: "user", content: promptText }];
     } else {
       return Response.json({ error: "Unknown mode" }, { status: 400 });
