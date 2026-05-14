@@ -1,0 +1,56 @@
+:root {
+  --bone: #f4efe6;
+  --bone-light: #faf6ee;
+  --paper: #fbf7ef;
+  --ink: #1a1a1a;
+  --ink-soft: #3a3a3a;
+  --clay: #b8472a;
+  --clay-dark: #8c3520;
+  --clay-soft: #e6c8b8;
+  --warm-gray: #8a8478;
+  --border: #d4ccbe;
+  --border-soft: #e4ddd0;
+  --olive: #5a6b3a;
+  --olive-soft: #c9d1b8;
+  --rose: #a64545;
+  --gold: #b8893a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Newsreader', Georgia, serif;
+  color: var(--ink);
+  background: var(--bone);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+input, textarea, select {
+  font-family: 'Newsreader', Georgia, serif;
+}
+
+button {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: var(--warm-gray); }
+
+.spin-icon { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.fade-in { animation: fadeIn 0.35s ease-out; }
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
