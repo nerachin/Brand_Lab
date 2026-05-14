@@ -3,7 +3,7 @@ import { AGENTS, buildSystemPromptForAgent } from "@/lib/agents";
 import { PROFESSOR_PROMPT, TOURNAMENT_PROMPT } from "@/lib/prompts";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 function getClient() {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -15,7 +15,7 @@ function getClient() {
 
 // Default model — sensible choice for cost/quality balance.
 // Override via ANTHROPIC_MODEL env var if you want Opus.
-const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5-20250929";
+const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL || "claude-opus-4-6";
 
 export async function POST(request) {
   try {
