@@ -1292,6 +1292,15 @@ function ImageGenerator({ agent, brief, currentDraft, visuals, brandingImage, on
   const [warning, setWarning] = useState(null);
   const [expanded, setExpanded] = useState(true);
 
+  // Reference images (manually attached by user, for gpt-image-2's edit endpoint).
+  // Each entry: { id, name, type, base64, dataUrl, sizeBytes }
+  // Max 4 references total (gpt-image-2 supports up to 16, but we cap for speed + request size).
+  // Brand sheet is auto-included as ref #1 when it exists — NOT in this state, applied at generate time.
+  const [refImages, setRefImages] = useState([]);
+  const [includeBrandSheetRef, setIncludeBrandSheetRef] = useState(true);
+  const refFileInputRef = useRef(null);
+  const REF_MAX_USER = 3; // user can add up to 3; brand sheet may take a 4th slot
+
   const seedPrompt = () => {
     if (agent.id === "A6") {
       return `Photograph of the physical brand setting for ${brief.industry || "this brand"}. Describe: interior, lighting, materials, mood, what a customer sees in the first 30 seconds.`;
@@ -1373,13 +1382,76 @@ function ImageGenerator({ agent, brief, currentDraft, visuals, brandingImage, on
     }
   };
 
+  const handleRefFilesPick = (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    setError(null);
+    const slotsLeft = REF_MAX_USER - refImages.length;
+    if (slotsLeft <= 0) {
+      setError(`You can attach up to ${REF_MAX_USER} reference images (plus the brand sheet auto-attaches when present).`);
+      e.target.value = "";
+      return;
+    }
+    const toAdd = files.slice(0, slotsLeft);
+    Promise.all(
+      toAdd.map((file) => {
+        if (!file.type.startsWith("image/")) {
+          throw new Error(`${file.name} is not an image — only PNG/JPEG/WebP supported for references.`);
+        }
+        if (file.size > 4 * 1024 * 1024) {
+          throw new Error(`${file.name} is over 4MB — reference images must be smaller.`);
+        }
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const dataUrl = reader.result;
+            const base64 = dataUrl.split(",")[1];
+            resolve({
+              id: `ref_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+              name: file.name,
+              type: file.type,
+              base64,
+              dataUrl,
+              sizeBytes: file.size,
+            });
+          };
+          reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+          reader.readAsDataURL(file);
+        });
+      })
+    )
+      .then((records) => setRefImages((prev) => [...prev, ...records]))
+      .catch((err) => setError(err.message));
+    e.target.value = "";
+  };
+
+  const removeRefImage = (refId) => {
+    setRefImages((prev) => prev.filter((r) => r.id !== refId));
+  };
+
   const generate = async () => {
     if (!prompt.trim() || generating) return;
     setGenerating(true);
     setError(null);
     setWarning(null);
     try {
-      const result = await api("/api/image", { prompt: prompt.trim(), size, quality });
+      // Build the reference-images payload. Brand sheet (if present and toggled on)
+      // is sent first as a data URL or public URL so the model has a clear anchor.
+      const referenceImages = [];
+      if (includeBrandSheetRef && brandingImage) {
+        const brandSrc = brandingImage.imageDataUrl || brandingImage.imageUrl;
+        if (brandSrc) referenceImages.push(brandSrc);
+      }
+      for (const r of refImages) {
+        referenceImages.push(r.dataUrl);
+      }
+
+      const result = await api("/api/image", {
+        prompt: prompt.trim(),
+        size,
+        quality,
+        referenceImages,
+      });
       if (result.error) throw new Error(result.error);
 
       const visualRecord = {
@@ -1388,6 +1460,7 @@ function ImageGenerator({ agent, brief, currentDraft, visuals, brandingImage, on
         imageDataUrl: result.image, // base64 — persisted only if imageUrl is missing
         size,
         quality,
+        refsUsed: result.referenceImagesUsed || 0,
       };
 
       // PERSISTENCE: always try to save to Redis. The server strips base64 when
@@ -1401,6 +1474,8 @@ function ImageGenerator({ agent, brief, currentDraft, visuals, brandingImage, on
           if (!result.imageUrl) {
             setWarning("Blob URL missing for this image — saved with base64 fallback. Image still works for the team, but takes more storage. If this keeps happening, check Vercel Blob is set to PUBLIC.");
           }
+          // Clear user-attached refs after successful generation (brand sheet stays auto-attached)
+          setRefImages([]);
         } catch (saveErr) {
           // Persistence failed entirely — show locally only
           setLocalImages((prev) => [{ ...visualRecord, id: `local_${Date.now()}` }, ...prev]);
@@ -1504,25 +1579,110 @@ function ImageGenerator({ agent, brief, currentDraft, visuals, brandingImage, on
           )}
 
           <div style={{ background: "var(--paper)", border: "1px solid var(--border)", padding: 12 }}>
-            {brandingImage && (
-              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "var(--olive)", letterSpacing: "0.08em", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
-                <Check size={11} /> ANCHORED TO BRAND IDENTITY SHEET — palette + mood will carry through
+            {/* Reference images strip — brand sheet (auto, toggleable) + user-attached */}
+            {(brandingImage || refImages.length > 0) && (
+              <div style={{
+                marginBottom: 12,
+                padding: 10,
+                background: "var(--bone-light)",
+                border: "1px dashed var(--border)",
+              }}>
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, letterSpacing: "0.1em", color: "var(--clay)", fontWeight: 600, textTransform: "uppercase", marginBottom: 8 }}>
+                  Reference images · sent to gpt-image-2
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {/* Brand sheet auto-ref — toggleable */}
+                  {brandingImage && (() => {
+                    const brandSrc = brandingImage.imageDataUrl || brandingImage.imageUrl;
+                    return (
+                      <div
+                        onClick={() => setIncludeBrandSheetRef((v) => !v)}
+                        style={{
+                          position: "relative",
+                          width: 56, height: 56,
+                          border: includeBrandSheetRef ? "2px solid var(--olive)" : "2px solid var(--border)",
+                          opacity: includeBrandSheetRef ? 1 : 0.35,
+                          cursor: "pointer",
+                          background: "var(--bone)",
+                          flexShrink: 0,
+                        }}
+                        title={includeBrandSheetRef ? "Brand sheet attached — click to disable" : "Click to attach brand sheet as reference"}
+                      >
+                        {brandSrc && (
+                          <img src={brandSrc} alt="brand" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                        )}
+                        <div style={{
+                          position: "absolute", bottom: -2, left: -2, right: -2,
+                          background: includeBrandSheetRef ? "var(--olive)" : "var(--warm-gray)",
+                          color: "var(--bone)",
+                          fontSize: 8, fontFamily: "'JetBrains Mono', monospace",
+                          letterSpacing: "0.06em", textAlign: "center",
+                          padding: "1px 2px", fontWeight: 600,
+                        }}>
+                          BRAND
+                        </div>
+                      </div>
+                    );
+                  })()}
+                  {/* User-attached references */}
+                  {refImages.map((r) => (
+                    <div
+                      key={r.id}
+                      style={{
+                        position: "relative",
+                        width: 56, height: 56,
+                        border: "2px solid var(--clay)",
+                        background: "var(--bone)",
+                        flexShrink: 0,
+                      }}
+                    >
+                      <img src={r.dataUrl} alt={r.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      <button
+                        onClick={() => removeRefImage(r.id)}
+                        title={`Remove ${r.name}`}
+                        style={{
+                          position: "absolute", top: -6, right: -6,
+                          width: 16, height: 16, borderRadius: "50%",
+                          background: "var(--rose)", color: "var(--bone)",
+                          border: "1px solid var(--bone)",
+                          fontSize: 9, lineHeight: 1, cursor: "pointer",
+                          fontFamily: "'JetBrains Mono', monospace",
+                          fontWeight: 700,
+                        }}
+                      >×</button>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ marginTop: 8, fontSize: 10, fontFamily: "'JetBrains Mono', monospace", color: "var(--warm-gray)", letterSpacing: "0.04em", lineHeight: 1.5 }}>
+                  {(includeBrandSheetRef && brandingImage ? 1 : 0) + refImages.length} of 4 references attached. gpt-image-2 uses these as visual anchors for palette, mood, and composition.
+                </div>
               </div>
             )}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6, gap: 8, flexWrap: "wrap" }}>
               <label style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, letterSpacing: "0.1em", color: "var(--clay)", fontWeight: 600, textTransform: "uppercase" }}>
                 Image Prompt
               </label>
-              {currentDraft && (
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                {/* Attach reference image button */}
+                <input
+                  ref={refFileInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  multiple
+                  onChange={handleRefFilesPick}
+                  style={{ display: "none" }}
+                />
                 <button
-                  onClick={seedFromDraft}
-                  disabled={buildingPrompt || generating}
+                  onClick={() => refFileInputRef.current?.click()}
+                  disabled={refImages.length >= REF_MAX_USER || generating}
+                  title={`Attach reference image(s). Limit ${REF_MAX_USER} user-provided + 1 brand sheet. PNG/JPEG/WebP up to 4MB each. gpt-image-2 uses them as visual anchors.`}
                   style={{
                     background: "transparent",
                     border: "1px solid var(--border)",
-                    color: buildingPrompt ? "var(--clay)" : "var(--ink-soft)",
+                    color: refImages.length >= REF_MAX_USER ? "var(--warm-gray)" : "var(--ink-soft)",
                     padding: "3px 8px",
-                    cursor: buildingPrompt || generating ? "wait" : "pointer",
+                    cursor: refImages.length >= REF_MAX_USER ? "not-allowed" : "pointer",
                     fontSize: 10,
                     letterSpacing: "0.05em",
                     fontFamily: "'JetBrains Mono', monospace",
@@ -1531,10 +1691,31 @@ function ImageGenerator({ agent, brief, currentDraft, visuals, brandingImage, on
                     gap: 5,
                   }}
                 >
-                  {buildingPrompt ? <Loader2 size={10} className="spin-icon" /> : <Sparkles size={10} />}
-                  {buildingPrompt ? "BUILDING PROMPT…" : "BUILD PROMPT FROM DRAFT"}
+                  <Paperclip size={10} /> ATTACH REF
                 </button>
-              )}
+                {currentDraft && (
+                  <button
+                    onClick={seedFromDraft}
+                    disabled={buildingPrompt || generating}
+                    style={{
+                      background: "transparent",
+                      border: "1px solid var(--border)",
+                      color: buildingPrompt ? "var(--clay)" : "var(--ink-soft)",
+                      padding: "3px 8px",
+                      cursor: buildingPrompt || generating ? "wait" : "pointer",
+                      fontSize: 10,
+                      letterSpacing: "0.05em",
+                      fontFamily: "'JetBrains Mono', monospace",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 5,
+                    }}
+                  >
+                    {buildingPrompt ? <Loader2 size={10} className="spin-icon" /> : <Sparkles size={10} />}
+                    {buildingPrompt ? "BUILDING PROMPT…" : "BUILD PROMPT FROM DRAFT"}
+                  </button>
+                )}
+              </div>
             </div>
             <textarea
               value={prompt}
