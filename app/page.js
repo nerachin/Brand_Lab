@@ -637,13 +637,51 @@ function DraftListItem({ draft, isWinner, onLoad, onSetWinner, onDelete, onRemov
   );
 }
 
-function ImageGenerator({ agent, brief, currentDraft }) {
+/**
+ * Extract the "## Visual direction" section from a draft.
+ * Returns the section text if found, or null.
+ */
+function extractVisualDirection(draftContent) {
+  if (!draftContent) return null;
+  // Match "## Visual direction" up to the next "## " heading, "---" divider, or end-of-string
+  const m = draftContent.match(/##\s+Visual\s+direction\s*\n([\s\S]+?)(?=\n##\s+|\n---\s*\n|\n---\s*$|$)/i);
+  if (m) {
+    const text = m[1].trim();
+    if (text.length > 5) return text;
+  }
+  return null;
+}
+
+/**
+ * Build a fallback image prompt when no "Visual direction" section exists.
+ * Pulls the must-say and first paragraph of slide body as context.
+ */
+function buildFallbackImagePrompt(agentName, draftContent) {
+  const parts = [];
+  const mustSayMatch = draftContent.match(/\*\*Must-say:\*\*\s*"([^"]+)"/i);
+  if (mustSayMatch) parts.push(`Spirit to capture: "${mustSayMatch[1]}"`);
+
+  const bodyMatch = draftContent.match(/##\s+Slide body\s*\n([\s\S]+?)(?=\n##\s+|\n---\s*\n|$)/i);
+  if (bodyMatch) {
+    const firstPara = bodyMatch[1].trim().split(/\n\n/)[0].replace(/\n/g, " ").slice(0, 250);
+    if (firstPara) parts.push(`Context: ${firstPara}`);
+  }
+
+  return [
+    `Editorial visual for the ${agentName} slide.`,
+    ...parts,
+    "Style: magazine quality, on-brand, no embedded text unless the slide explicitly asks for it.",
+  ].join("\n\n");
+}
+
+function ImageGenerator({ agent, brief, currentDraft, visuals, onSaveVisual, onDeleteVisual }) {
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState("1024x1024");
   const [quality, setQuality] = useState("medium");
   const [generating, setGenerating] = useState(false);
-  const [images, setImages] = useState([]);
+  const [localImages, setLocalImages] = useState([]); // fallback for when Blob isn't configured
   const [error, setError] = useState(null);
+  const [warning, setWarning] = useState(null);
   const [expanded, setExpanded] = useState(false);
 
   const seedPrompt = () => {
@@ -664,18 +702,52 @@ function ImageGenerator({ agent, brief, currentDraft }) {
       alert("No current draft to seed from. Iterate in the chat first or fork a saved draft.");
       return;
     }
-    // Very simple extraction: just put the draft content into the prompt area
-    setPrompt(`Based on this slide content, generate a visual:\n\n${currentDraft.slice(0, 800)}\n\nStyle: editorial, magazine quality, on-brand.`);
+    const visualDirection = extractVisualDirection(currentDraft);
+    if (visualDirection) {
+      setPrompt(visualDirection);
+      setWarning(null);
+    } else {
+      setPrompt(buildFallbackImagePrompt(agent.name, currentDraft));
+      setWarning("No '## Visual direction' section found in the draft — used a fallback based on must-say + slide body. Edit if needed.");
+    }
   };
 
   const generate = async () => {
     if (!prompt.trim() || generating) return;
     setGenerating(true);
     setError(null);
+    setWarning(null);
     try {
       const result = await api("/api/image", { prompt: prompt.trim(), size, quality });
       if (result.error) throw new Error(result.error);
-      setImages([{ src: result.image, prompt: prompt.trim(), id: Date.now(), size }, ...images]);
+
+      const visualRecord = {
+        prompt: prompt.trim(),
+        imageUrl: result.imageUrl || null, // public Blob URL; null if Blob not configured
+        imageDataUrl: result.image, // base64 for immediate display
+        size,
+        quality,
+      };
+
+      // If Blob is configured, persist to Redis so teammates and future sessions can see it
+      if (onSaveVisual && result.imageUrl) {
+        try {
+          await onSaveVisual(visualRecord);
+          // Saved successfully — relying on `visuals` prop now, clear local fallback
+        } catch (saveErr) {
+          // Persistence failed — show locally only and warn
+          setLocalImages((prev) => [{ ...visualRecord, id: `local_${Date.now()}` }, ...prev]);
+          setWarning(`Image generated but not saved to team: ${saveErr.message}`);
+        }
+      } else {
+        // No Blob configured OR no save handler — fall back to browser-only display
+        setLocalImages((prev) => [{ ...visualRecord, id: `local_${Date.now()}` }, ...prev]);
+        if (result.blobError) {
+          setWarning(`Image lives in your browser only — Vercel Blob not configured (${result.blobError}). Enable Blob in Vercel Storage to persist and share.`);
+        } else if (!result.imageUrl) {
+          setWarning("Image lives in your browser only — couldn't generate a public URL. Won't show up for teammates or in Gamma.");
+        }
+      }
     } catch (e) {
       setError(e.message);
     } finally {
@@ -685,12 +757,25 @@ function ImageGenerator({ agent, brief, currentDraft }) {
 
   const download = (img) => {
     const a = document.createElement("a");
-    a.href = img.src;
-    a.download = `${agent.id}_${img.id}.png`;
+    a.href = img.imageDataUrl || img.imageUrl;
+    a.download = `${agent.id}_${img.id || Date.now()}.png`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
   };
+
+  const handleDelete = async (visualId) => {
+    if (visualId.startsWith && visualId.startsWith("local_")) {
+      // Browser-only fallback image, just remove from local state
+      setLocalImages((prev) => prev.filter((v) => v.id !== visualId));
+      return;
+    }
+    if (onDeleteVisual) await onDeleteVisual(visualId);
+  };
+
+  // Combine persisted visuals (newest first) with any in-session local fallbacks
+  const persisted = [...(visuals || [])].sort((a, b) => b.createdAt - a.createdAt);
+  const allImages = [...localImages, ...persisted];
 
   return (
     <div style={{ marginBottom: 24 }}>
@@ -701,7 +786,7 @@ function ImageGenerator({ agent, brief, currentDraft }) {
         <h3 style={{ fontFamily: "'Fraunces', serif", fontSize: 17, fontWeight: 600, margin: 0, color: "var(--ink)", display: "flex", alignItems: "center", gap: 8 }}>
           <Wand2 size={15} color="var(--clay)" /> Visuals
           <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "var(--warm-gray)", letterSpacing: "0.05em", fontWeight: 400 }}>
-            GPT IMAGE 2{images.length > 0 ? ` · ${images.length} GENERATED` : ""}
+            GPT IMAGE 2{allImages.length > 0 ? ` · ${allImages.length} SAVED` : ""}
           </span>
         </h3>
         {expanded ? <ChevronDown size={16} color="var(--warm-gray)" /> : <ChevronRight size={16} color="var(--warm-gray)" />}
@@ -709,19 +794,50 @@ function ImageGenerator({ agent, brief, currentDraft }) {
 
       {expanded && (
         <>
-          {images.length > 0 && (
+          {allImages.length > 0 && (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12, marginBottom: 14 }}>
-              {images.map((img) => (
-                <div key={img.id} style={{ background: "var(--paper)", border: "1px solid var(--border)", padding: 8 }}>
-                  <img src={img.src} alt={img.prompt} style={{ width: "100%", display: "block", aspectRatio: img.size === "1024x1024" ? "1/1" : img.size === "1536x1024" ? "3/2" : "2/3", objectFit: "cover" }} />
-                  <div style={{ fontSize: 11, color: "var(--warm-gray)", padding: "6px 2px 4px", fontStyle: "italic", lineHeight: 1.4 }}>
-                    {img.prompt.length > 100 ? img.prompt.slice(0, 100) + "…" : img.prompt}
+              {allImages.map((img) => {
+                const isLocal = String(img.id || "").startsWith("local_");
+                const src = img.imageDataUrl || img.imageUrl;
+                return (
+                  <div key={img.id} style={{ background: "var(--paper)", border: "1px solid var(--border)", padding: 8, position: "relative" }}>
+                    <img
+                      src={src}
+                      alt={img.prompt}
+                      style={{
+                        width: "100%", display: "block",
+                        aspectRatio: img.size === "1024x1024" ? "1/1" : img.size === "1536x1024" ? "3/2" : "2/3",
+                        objectFit: "cover",
+                      }}
+                    />
+                    {isLocal && (
+                      <div style={{ position: "absolute", top: 12, left: 12, background: "var(--gold)", color: "var(--bone)", padding: "2px 6px", fontSize: 9, letterSpacing: "0.08em", fontFamily: "'JetBrains Mono', monospace", fontWeight: 600 }}>
+                        UNSAVED
+                      </div>
+                    )}
+                    <div style={{ fontSize: 11, color: "var(--warm-gray)", padding: "6px 2px 4px", fontStyle: "italic", lineHeight: 1.4 }}>
+                      {img.prompt.length > 100 ? img.prompt.slice(0, 100) + "…" : img.prompt}
+                      {img.author && !isLocal && (
+                        <span style={{ display: "block", fontStyle: "normal", fontSize: 10, color: "var(--warm-gray)", marginTop: 2, fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.04em" }}>
+                          BY {img.author.toUpperCase()}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <button onClick={() => download(img)} style={{ flex: 1, background: "transparent", border: "1px solid var(--border)", color: "var(--ink-soft)", padding: "5px", cursor: "pointer", fontSize: 10, letterSpacing: "0.05em", fontFamily: "'JetBrains Mono', monospace" }}>
+                        <Download size={10} style={{ display: "inline", marginRight: 4, verticalAlign: "middle" }} /> PNG
+                      </button>
+                      <button
+                        onClick={() => handleDelete(img.id)}
+                        title="Delete image"
+                        style={{ background: "transparent", border: "1px solid var(--rose)", color: "var(--rose)", padding: "5px 8px", cursor: "pointer", fontSize: 10 }}
+                      >
+                        <Trash2 size={10} />
+                      </button>
+                    </div>
                   </div>
-                  <button onClick={() => download(img)} style={{ width: "100%", background: "transparent", border: "1px solid var(--border)", color: "var(--ink-soft)", padding: "5px", cursor: "pointer", fontSize: 10, letterSpacing: "0.05em", fontFamily: "'JetBrains Mono', monospace" }}>
-                    <Download size={10} style={{ display: "inline", marginRight: 4, verticalAlign: "middle" }} /> DOWNLOAD PNG
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -732,7 +848,7 @@ function ImageGenerator({ agent, brief, currentDraft }) {
               </label>
               {currentDraft && (
                 <button onClick={seedFromDraft} style={{ background: "transparent", border: "1px solid var(--border)", color: "var(--ink-soft)", padding: "3px 8px", cursor: "pointer", fontSize: 10, letterSpacing: "0.05em", fontFamily: "'JetBrains Mono', monospace" }}>
-                  SEED FROM CURRENT DRAFT
+                  SEED FROM VISUAL DIRECTION
                 </button>
               )}
             </div>
@@ -769,8 +885,13 @@ function ImageGenerator({ agent, brief, currentDraft }) {
                 ⚠ {error}
               </div>
             )}
+            {warning && !error && (
+              <div style={{ marginTop: 10, color: "var(--gold)", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", lineHeight: 1.5 }}>
+                ⚠ {warning}
+              </div>
+            )}
             <div style={{ marginTop: 8, fontSize: 11, color: "var(--warm-gray)", fontStyle: "italic" }}>
-              High quality at 1024×1024 takes 30–90 seconds. Images live in your browser only — download to save and share via Slack.
+              High quality at 1024×1024 takes 30–90 seconds. Images persist to the team gallery when Vercel Blob is enabled.
             </div>
           </div>
         </>
@@ -779,7 +900,7 @@ function ImageGenerator({ agent, brief, currentDraft }) {
   );
 }
 
-function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, workspace, onBack, onSendMessage, onSaveDraft, onSetWinner, onDeleteDraft, onRemoveImage, onLoadDraft, onRunTournament, tournamentResult, isWaiting, refreshing, onRefresh }) {
+function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, workspace, visuals, onBack, onSendMessage, onSaveDraft, onSetWinner, onDeleteDraft, onRemoveImage, onSaveVisual, onDeleteVisual, onLoadDraft, onRunTournament, tournamentResult, isWaiting, refreshing, onRefresh }) {
   const [input, setInput] = useState("");
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [draftName, setDraftName] = useState("");
@@ -914,7 +1035,14 @@ function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, w
         </div>
       )}
 
-      <ImageGenerator agent={agent} brief={brief} currentDraft={currentDraft} />
+      <ImageGenerator
+        agent={agent}
+        brief={brief}
+        currentDraft={currentDraft}
+        visuals={visuals || []}
+        onSaveVisual={onSaveVisual}
+        onDeleteVisual={onDeleteVisual}
+      />
 
       <div style={{ background: "var(--paper)", border: "1px solid var(--border)" }}>
         <div style={{ padding: "12px 18px", borderBottom: "1px solid var(--border)", background: "var(--bone-light)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -1662,6 +1790,7 @@ export default function Page() {
   const [draftsByAgent, setDraftsByAgent] = useState({});
   const [winners, setWinners] = useState({});
   const [tournaments, setTournaments] = useState({});
+  const [visualsByAgent, setVisualsByAgent] = useState({});
   const [workspaces, setWorkspaces] = useState({});
 
   const [refreshing, setRefreshing] = useState(false);
@@ -1699,6 +1828,7 @@ export default function Page() {
       setDraftsByAgent(data.draftsByAgent || {});
       setWinners(data.winners || {});
       setTournaments(data.tournaments || {});
+      setVisualsByAgent(data.visualsByAgent || {});
       setNeedsPassword(false);
       setPasswordError("");
     } catch (e) {
@@ -1873,6 +2003,46 @@ export default function Page() {
     }
   };
 
+  const saveVisual = async (agentId, visual) => {
+    // Visual is built by ImageGenerator: { prompt, imageUrl, imageDataUrl?, size, quality }
+    const visualId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const record = {
+      id: visualId,
+      agentId,
+      prompt: visual.prompt,
+      imageUrl: visual.imageUrl, // public Blob URL; null if Blob not configured
+      imageDataUrl: visual.imageDataUrl || null, // kept only if no public URL (fallback)
+      size: visual.size,
+      quality: visual.quality,
+      author: user.handle,
+      createdAt: Date.now(),
+    };
+    try {
+      await callStorage("saveVisual", { visual: record });
+      setVisualsByAgent((prev) => ({
+        ...prev,
+        [agentId]: [...(prev[agentId] || []), record],
+      }));
+      return record;
+    } catch (e) {
+      // Re-throw so caller can show error
+      throw new Error("Failed to save visual: " + e.message);
+    }
+  };
+
+  const deleteVisual = async (agentId, visualId) => {
+    if (!window.confirm("Delete this image? This affects everyone.")) return;
+    try {
+      await callStorage("deleteVisual", { agentId, visualId });
+      setVisualsByAgent((prev) => ({
+        ...prev,
+        [agentId]: (prev[agentId] || []).filter((v) => v.id !== visualId),
+      }));
+    } catch (e) {
+      alert("Failed to delete visual: " + e.message);
+    }
+  };
+
   const setDraftAsWinner = async (agentId, draftId) => {
     try {
       await callStorage("setWinner", { agentId, draftId });
@@ -1983,12 +2153,15 @@ export default function Page() {
               winnerId={winners[openAgentId]}
               upstreamLocks={getUpstreamLocks(openAgentId)}
               workspace={workspaces[openAgentId]}
+              visuals={visualsByAgent[openAgentId] || []}
               onBack={() => setOpenAgentId(null)}
               onSendMessage={(msg) => sendAgentMessage(openAgentId, msg)}
               onSaveDraft={(name, content, imgUrl, imgDesc, imgPublicUrl) => saveDraft(openAgentId, name, content, imgUrl, imgDesc, imgPublicUrl)}
               onSetWinner={(draftId) => setDraftAsWinner(openAgentId, draftId)}
               onDeleteDraft={(draftId) => deleteDraft(openAgentId, draftId)}
               onRemoveImage={(draftId) => removeImageFromDraft(openAgentId, draftId)}
+              onSaveVisual={(visual) => saveVisual(openAgentId, visual)}
+              onDeleteVisual={(visualId) => deleteVisual(openAgentId, visualId)}
               onLoadDraft={(draft) => loadDraftIntoWorkspace(openAgentId, draft)}
               onRunTournament={() => runTournament(openAgentId)}
               tournamentResult={tournaments[openAgentId]}

@@ -30,11 +30,12 @@ export async function POST(request) {
 
     switch (action) {
       case "loadAll": {
-        // Return brief, all drafts grouped, all winners, all tournaments
+        // Return brief, all drafts grouped, all winners, all tournaments, all visuals
         const briefRaw = await redis.get("brief");
         const draftKeys = await redis.keys("draft:*");
         const winnerKeys = await redis.keys("winner:*");
         const tournamentKeys = await redis.keys("tournament:*");
+        const visualKeys = await redis.keys("visual:*");
 
         const draftsByAgent = {};
         if (draftKeys.length > 0) {
@@ -73,6 +74,21 @@ export async function POST(request) {
           }
         }
 
+        const visualsByAgent = {};
+        if (visualKeys.length > 0) {
+          const visualValues = await redis.mget(...visualKeys);
+          for (let i = 0; i < visualKeys.length; i++) {
+            const val = visualValues[i];
+            if (!val) continue;
+            const visual = typeof val === "string" ? JSON.parse(val) : val;
+            if (!visualsByAgent[visual.agentId]) visualsByAgent[visual.agentId] = [];
+            visualsByAgent[visual.agentId].push(visual);
+          }
+          for (const aId of Object.keys(visualsByAgent)) {
+            visualsByAgent[aId].sort((a, b) => a.createdAt - b.createdAt);
+          }
+        }
+
         let brief = {};
         let briefMeta = {};
         if (briefRaw) {
@@ -81,7 +97,7 @@ export async function POST(request) {
           briefMeta = parsed.meta || {};
         }
 
-        return Response.json({ brief, briefMeta, draftsByAgent, winners, tournaments });
+        return Response.json({ brief, briefMeta, draftsByAgent, winners, tournaments, visualsByAgent });
       }
 
       case "saveBrief": {
@@ -145,6 +161,21 @@ export async function POST(request) {
         return Response.json({ ok: true });
       }
 
+      case "saveVisual": {
+        const { visual } = body;
+        if (!visual?.id || !visual?.agentId) {
+          return Response.json({ error: "visual.id and visual.agentId required" }, { status: 400 });
+        }
+        await redis.set(`visual:${visual.agentId}:${visual.id}`, JSON.stringify(visual));
+        return Response.json({ ok: true });
+      }
+
+      case "deleteVisual": {
+        const { agentId, visualId } = body;
+        await redis.del(`visual:${agentId}:${visualId}`);
+        return Response.json({ ok: true });
+      }
+
       case "resetAll": {
         // Nuke the whole shared state. Confirmed client-side.
         const all = [
@@ -152,6 +183,7 @@ export async function POST(request) {
           ...(await redis.keys("draft:*")),
           ...(await redis.keys("winner:*")),
           ...(await redis.keys("tournament:*")),
+          ...(await redis.keys("visual:*")),
         ];
         if (all.length > 0) await redis.del(...all);
         return Response.json({ ok: true });
