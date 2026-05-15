@@ -140,8 +140,19 @@ export async function POST(request) {
           loadErrors.push({ section: "coverImage", message: e?.message || String(e) });
         }
 
+        // ---- Branding sheet (brand identity overview, set on Tab 1) ----
+        let brandingImage = null;
+        try {
+          const brandingImageRaw = await redis.get("branding_image");
+          if (brandingImageRaw) {
+            brandingImage = typeof brandingImageRaw === "string" ? JSON.parse(brandingImageRaw) : brandingImageRaw;
+          }
+        } catch (e) {
+          loadErrors.push({ section: "brandingImage", message: e?.message || String(e) });
+        }
+
         return Response.json({
-          brief, briefMeta, draftsByAgent, winners, tournaments, visualsByAgent, coverImage,
+          brief, briefMeta, draftsByAgent, winners, tournaments, visualsByAgent, coverImage, brandingImage,
           loadErrors, // [] when everything succeeded
         });
       }
@@ -173,10 +184,21 @@ export async function POST(request) {
         await redis.del(`draft:${agentId}:${draftId}`);
         // also clear winner pointer if it pointed here
         const w = await redis.get(`winner:${agentId}`);
+        let winnerCleared = false;
         if (w === draftId) {
           await redis.del(`winner:${agentId}`);
+          winnerCleared = true;
         }
-        return Response.json({ ok: true });
+        // Always clear tournament result for this agent — the ruling compared
+        // a specific set of drafts; removing one invalidates the analysis.
+        // Cheaper to re-run than to leave stale rulings on screen.
+        let tournamentCleared = false;
+        const t = await redis.get(`tournament:${agentId}`);
+        if (t) {
+          await redis.del(`tournament:${agentId}`);
+          tournamentCleared = true;
+        }
+        return Response.json({ ok: true, winnerCleared, tournamentCleared });
       }
 
       case "removeImage": {
@@ -248,6 +270,23 @@ export async function POST(request) {
 
       case "deleteCoverImage": {
         await redis.del("cover_image");
+        return Response.json({ ok: true });
+      }
+
+      case "saveBrandingImage": {
+        const { brandingImage } = body;
+        if (!brandingImage) {
+          return Response.json({ error: "brandingImage required" }, { status: 400 });
+        }
+        const persisted = brandingImage.imageUrl
+          ? { ...brandingImage, imageDataUrl: null }
+          : brandingImage;
+        await redis.set("branding_image", JSON.stringify(persisted));
+        return Response.json({ ok: true });
+      }
+
+      case "deleteBrandingImage": {
+        await redis.del("branding_image");
         return Response.json({ ok: true });
       }
 
@@ -362,11 +401,24 @@ export async function POST(request) {
           }
         }
 
+        let brandingCompacted = false;
+        const brandingRaw = await redis.get("branding_image");
+        if (brandingRaw) {
+          const b = typeof brandingRaw === "string" ? JSON.parse(brandingRaw) : brandingRaw;
+          if (b.imageDataUrl && b.imageUrl) {
+            bytesFreed += b.imageDataUrl.length;
+            b.imageDataUrl = null;
+            await redis.set("branding_image", JSON.stringify(b));
+            brandingCompacted = true;
+          }
+        }
+
         return Response.json({
           ok: true,
           draftsCompacted,
           visualsCompacted,
           coverCompacted,
+          brandingCompacted,
           bytesFreed,
           mbFreed: (bytesFreed / 1024 / 1024).toFixed(2),
         });
@@ -377,6 +429,7 @@ export async function POST(request) {
         const all = [
           "brief",
           "cover_image",
+          "branding_image",
           ...(await redis.keys("draft:*")),
           ...(await redis.keys("winner:*")),
           ...(await redis.keys("tournament:*")),

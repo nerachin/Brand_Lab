@@ -309,7 +309,7 @@ function TabNav({ active, onChange, briefReady, anyDrafts }) {
   );
 }
 
-function BriefForm({ brief, briefMeta, user, onSave, onContinue }) {
+function BriefForm({ brief, briefMeta, user, onSave, onContinue, brandingImage, onSaveBrandingImage, onDeleteBrandingImage }) {
   const [local, setLocal] = useState(brief);
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState(null); // null | "saved" | "saving" | "error: ..."
@@ -480,6 +480,17 @@ function BriefForm({ brief, briefMeta, user, onSave, onContinue }) {
           </button>
         </div>
       </div>
+
+      {/* Brand Identity Sheet generator — only renders once the brief has the four
+          required fields. Wiring is plumbed through props from App. */}
+      {ready && onSaveBrandingImage && (
+        <BrandingSheetGenerator
+          brief={local}
+          brandingImage={brandingImage}
+          onSaveBrandingImage={onSaveBrandingImage}
+          onDeleteBrandingImage={onDeleteBrandingImage}
+        />
+      )}
     </div>
   );
 }
@@ -930,6 +941,230 @@ function CoverImageGenerator({ brief, coverImage, onSaveCoverImage, onDeleteCove
           High quality at 1536×1024 takes 60–120 seconds. The cover is shared across the team and inlined on the title slide every time you regenerate the Gamma deck.
         </div>
       </div>
+    </div>
+  );
+}
+
+
+/**
+ * Brand Identity Sheet generator for Tab 1.
+ * Single-slot persisted image: generates a poster-style brand sheet (logo,
+ * variants, palette, mockups) from the brief. Sets the visual tone for the
+ * whole team early in the process — shared anchor for design discussions.
+ */
+function BrandingSheetGenerator({ brief, brandingImage, onSaveBrandingImage, onDeleteBrandingImage }) {
+  const [prompt, setPrompt] = useState("");
+  const [size, setSize] = useState("1024x1536"); // portrait — best for brand-sheet posters
+  const [quality, setQuality] = useState("high");
+  const [generating, setGenerating] = useState(false);
+  const [buildingPrompt, setBuildingPrompt] = useState(false);
+  const [error, setError] = useState(null);
+  const [warning, setWarning] = useState(null);
+  const [collapsed, setCollapsed] = useState(false);
+
+  const buildPromptFromBrief = async () => {
+    if (!brief?.productIdea && !brief?.industry) {
+      alert("Fill in the Brief above first — at minimum product idea and industry.");
+      return;
+    }
+    setBuildingPrompt(true);
+    setError(null);
+    setWarning(null);
+    try {
+      const promptText = [
+        "## BRAND BRIEF",
+        `- Product idea: ${brief.productIdea || "[unspecified]"}`,
+        `- Industry: ${brief.industry || "[unspecified]"}`,
+        `- Incumbent being disrupted: ${brief.incumbentName || "[unspecified]"}`,
+        `- Disruption vector: ${brief.disruptionVector || "[unspecified]"}`,
+        `- Geography: ${brief.geography || "[unspecified]"}`,
+        brief.founderStory ? `- Founder story: ${brief.founderStory}` : "",
+        brief.notes ? `- Additional context: ${brief.notes}` : "",
+        "",
+        "## AGENT / SLIDE TYPE",
+        "BRANDING_SHEET — full brand identity overview poster (one image, portrait orientation)",
+        "",
+        "## SLIDE CONTENT",
+        "# Brand Identity Sheet",
+        "",
+        "Poster-style overview of the proposed brand identity: logo, variants, color palette, and application mockups — like a one-page deliverable from a brand identity firm.",
+        "",
+        "## Visual direction",
+        "Pull a brand name from the product idea (or use a credible placeholder if none is obvious).",
+        "Pick 5-7 palette colors that fit the disruption vector and industry register.",
+        "Include 2-3 application mockups appropriate to the product category.",
+        "All section labels in monospaced ALL-CAPS small type (PRIMARY LOGO, COLOR PALETTE, APPLICATION MOCKUPS).",
+        "Editorial, gridded, restrained — Pentagram / COLLINS / Mucca register, not generic AI-template feel.",
+        "",
+        "Now write the image prompt. Output the prompt text only, nothing else.",
+      ].filter(Boolean).join("\n");
+
+      const result = await api("/api/prompt-builder", { promptText });
+      const generated = (result.text || "").trim();
+      if (!generated) throw new Error("Empty response from prompt builder.");
+      setPrompt(generated);
+    } catch (e) {
+      setError(`Prompt builder failed: ${e.message}`);
+    } finally {
+      setBuildingPrompt(false);
+    }
+  };
+
+  const generate = async () => {
+    if (!prompt.trim() || generating) return;
+    setGenerating(true);
+    setError(null);
+    setWarning(null);
+    try {
+      const result = await api("/api/image", { prompt: prompt.trim(), size, quality });
+      if (result.error) throw new Error(result.error);
+
+      await onSaveBrandingImage({
+        prompt: prompt.trim(),
+        imageDataUrl: result.image,
+        imageUrl: result.imageUrl || null,
+        size,
+        quality,
+      });
+
+      if (!result.imageUrl) {
+        setWarning("Image generated and saved locally, but no public URL was created — Vercel Blob may not be enabled as PUBLIC.");
+      }
+      setPrompt("");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const displaySrc = brandingImage?.imageDataUrl || brandingImage?.imageUrl;
+
+  return (
+    <div style={{ background: "var(--paper)", border: "1px solid var(--ink)", borderLeft: "4px solid var(--clay)", padding: "24px 28px", marginTop: 32 }}>
+      <div
+        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}
+        onClick={() => setCollapsed((c) => !c)}
+      >
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+            <Wand2 size={16} color="var(--clay)" />
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.15em", color: "var(--clay)", fontWeight: 600 }}>
+              BRAND IDENTITY SHEET · OPTIONAL VISUAL ANCHOR
+            </div>
+          </div>
+          <h3 style={{ fontFamily: "'Fraunces', serif", fontSize: 22, fontWeight: 600, margin: "0 0 4px", letterSpacing: "-0.01em" }}>
+            Generate a brand identity sheet
+          </h3>
+          <p style={{ color: "var(--ink-soft)", fontSize: 13, margin: 0, lineHeight: 1.55 }}>
+            Poster-style overview — logo, variants, palette, application mockups. Sets the visual tone for the team before the agents start drafting.
+          </p>
+        </div>
+        {collapsed ? <ChevronDown size={18} color="var(--warm-gray)" /> : <ChevronRight size={18} color="var(--warm-gray)" style={{ transform: "rotate(90deg)" }} />}
+      </div>
+
+      {!collapsed && (
+        <div style={{ marginTop: 18 }}>
+          {/* Existing sheet preview */}
+          {brandingImage && displaySrc && (
+            <div style={{ marginBottom: 18, background: "var(--bone-light)", padding: 12, border: "1px solid var(--border)" }}>
+              <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
+                <img
+                  src={displaySrc}
+                  alt="Brand identity sheet"
+                  style={{ maxWidth: 280, maxHeight: 420, objectFit: "contain", border: "1px solid var(--border)", background: "var(--bone)", flexShrink: 0 }}
+                />
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "var(--warm-gray)", letterSpacing: "0.06em", marginBottom: 8 }}>
+                    CURRENT BRAND SHEET · BY {(brandingImage.author || "").toUpperCase()}
+                  </div>
+                  <p style={{ fontSize: 12, color: "var(--ink-soft)", lineHeight: 1.6, marginTop: 0, marginBottom: 12, fontStyle: "italic" }}>
+                    {brandingImage.prompt && brandingImage.prompt.length > 280
+                      ? brandingImage.prompt.slice(0, 280) + "…"
+                      : brandingImage.prompt}
+                  </p>
+                  <button
+                    onClick={onDeleteBrandingImage}
+                    style={{
+                      background: "transparent", border: "1px solid var(--rose)", color: "var(--rose)",
+                      padding: "5px 10px", cursor: "pointer", fontSize: 10,
+                      fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.06em",
+                      display: "inline-flex", alignItems: "center", gap: 5,
+                    }}
+                  >
+                    <Trash2 size={10} /> DELETE BRAND SHEET
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Generator */}
+          <div style={{ background: "var(--bone-light)", border: "1px solid var(--border)", padding: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+              <label style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, letterSpacing: "0.1em", color: "var(--clay)", fontWeight: 600, textTransform: "uppercase" }}>
+                {brandingImage ? "Replace brand sheet — image prompt" : "Image prompt"}
+              </label>
+              <button
+                onClick={buildPromptFromBrief}
+                disabled={buildingPrompt || generating}
+                style={{
+                  background: "transparent", border: "1px solid var(--border)",
+                  color: buildingPrompt ? "var(--clay)" : "var(--ink-soft)",
+                  padding: "3px 8px", cursor: buildingPrompt || generating ? "wait" : "pointer",
+                  fontSize: 10, letterSpacing: "0.05em",
+                  fontFamily: "'JetBrains Mono', monospace",
+                  display: "inline-flex", alignItems: "center", gap: 5,
+                }}
+              >
+                {buildingPrompt ? <Loader2 size={10} className="spin-icon" /> : <Sparkles size={10} />}
+                {buildingPrompt ? "BUILDING…" : "BUILD PROMPT FROM BRIEF"}
+              </button>
+            </div>
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder="Describe the brand sheet (or click 'Build Prompt from Brief' to have Claude generate one based on what you've entered above)."
+              rows={5}
+              disabled={generating}
+              style={{ width: "100%", background: "var(--paper)", border: "1px solid var(--border)", padding: "8px 10px", fontSize: 13, fontFamily: "'Newsreader', Georgia, serif", outline: "none", resize: "vertical", boxSizing: "border-box", marginBottom: 10 }}
+            />
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <select value={size} onChange={(e) => setSize(e.target.value)} disabled={generating} style={{ background: "var(--paper)", border: "1px solid var(--border)", padding: "6px 8px", fontSize: 11, fontFamily: "'JetBrains Mono', monospace" }}>
+                <option value="1024x1536">1024×1536 ▯ portrait (recommended)</option>
+                <option value="1024x1024">1024×1024 ◻ square</option>
+                <option value="1536x1024">1536×1024 ▭ landscape</option>
+              </select>
+              <select value={quality} onChange={(e) => setQuality(e.target.value)} disabled={generating} style={{ background: "var(--paper)", border: "1px solid var(--border)", padding: "6px 8px", fontSize: 11, fontFamily: "'JetBrains Mono', monospace" }}>
+                <option value="high">High quality · slow (recommended)</option>
+                <option value="medium">Medium quality</option>
+                <option value="low">Low quality · fast</option>
+              </select>
+              <button
+                onClick={generate}
+                disabled={!prompt.trim() || generating}
+                style={{ marginLeft: "auto", background: prompt.trim() && !generating ? "var(--clay)" : "var(--border)", color: prompt.trim() && !generating ? "var(--bone)" : "var(--warm-gray)", border: "none", padding: "8px 16px", cursor: prompt.trim() && !generating ? "pointer" : "not-allowed", fontSize: 11, display: "flex", alignItems: "center", gap: 6, letterSpacing: "0.06em", textTransform: "uppercase" }}
+              >
+                {generating ? <Loader2 size={12} className="spin-icon" /> : <Sparkles size={12} />}
+                {generating ? "GENERATING…" : (brandingImage ? "REPLACE BRAND SHEET" : "GENERATE BRAND SHEET")}
+              </button>
+            </div>
+            {error && (
+              <div style={{ marginTop: 10, color: "var(--rose)", fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }}>
+                ⚠ {error}
+              </div>
+            )}
+            {warning && !error && (
+              <div style={{ marginTop: 10, color: "var(--gold)", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", lineHeight: 1.5 }}>
+                ⚠ {warning}
+              </div>
+            )}
+            <div style={{ marginTop: 8, fontSize: 11, color: "var(--warm-gray)", fontStyle: "italic", lineHeight: 1.5 }}>
+              High quality at 1024×1536 takes 60–120 seconds. gpt-image-2 will approximate a brand sheet — quality varies; you may need 2–3 attempts to land it. The sheet is shared with the team and lives here as a reference; it doesn't auto-ship to the Gamma deck.
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2368,6 +2603,7 @@ export default function Page() {
   const [tournaments, setTournaments] = useState({});
   const [visualsByAgent, setVisualsByAgent] = useState({});
   const [coverImage, setCoverImage] = useState(null);
+  const [brandingImage, setBrandingImage] = useState(null);
   const [workspaces, setWorkspaces] = useState({});
 
   const [refreshing, setRefreshing] = useState(false);
@@ -2407,6 +2643,7 @@ export default function Page() {
       setTournaments(data.tournaments || {});
       setVisualsByAgent(data.visualsByAgent || {});
       setCoverImage(data.coverImage || null);
+      setBrandingImage(data.brandingImage || null);
       setNeedsPassword(false);
       setPasswordError("");
       // Surface per-section load failures — these happen when one Redis section
@@ -2569,7 +2806,7 @@ export default function Page() {
   };
 
   const deleteDraft = async (agentId, draftId) => {
-    if (!window.confirm("Delete this draft? This affects everyone.")) return;
+    if (!window.confirm("Delete this draft? This also clears the tournament ruling for this section (re-run after deletion). Affects everyone.")) return;
     try {
       await callStorage("deleteDraft", { agentId, draftId });
       setDraftsByAgent((prev) => ({
@@ -2583,6 +2820,13 @@ export default function Page() {
           return n;
         });
       }
+      // Tournament ruling was computed against a specific draft set — invalidate it
+      setTournaments((prev) => {
+        if (!prev[agentId]) return prev;
+        const n = { ...prev };
+        delete n[agentId];
+        return n;
+      });
     } catch (e) {
       alert("Failed to delete: " + e.message);
     }
@@ -2673,6 +2917,35 @@ export default function Page() {
       setCoverImage(null);
     } catch (e) {
       alert("Failed to delete cover image: " + e.message);
+    }
+  };
+
+  const saveBrandingImage = async ({ prompt, imageDataUrl, imageUrl, size, quality }) => {
+    const record = {
+      prompt,
+      imageDataUrl,
+      imageUrl: imageUrl || null,
+      size,
+      quality,
+      author: user.handle,
+      createdAt: Date.now(),
+    };
+    try {
+      await callStorage("saveBrandingImage", { brandingImage: record });
+      setBrandingImage(record);
+      return record;
+    } catch (e) {
+      throw new Error("Failed to save branding sheet: " + e.message);
+    }
+  };
+
+  const deleteBrandingImage = async () => {
+    if (!window.confirm("Delete the brand identity sheet? This affects everyone.")) return;
+    try {
+      await callStorage("deleteBrandingImage");
+      setBrandingImage(null);
+    } catch (e) {
+      alert("Failed to delete brand identity sheet: " + e.message);
     }
   };
 
@@ -2844,6 +3117,9 @@ export default function Page() {
               user={user}
               onSave={saveBrief}
               onContinue={() => setActiveTab("pipeline")}
+              brandingImage={brandingImage}
+              onSaveBrandingImage={saveBrandingImage}
+              onDeleteBrandingImage={deleteBrandingImage}
             />
           )}
           {activeTab === "pipeline" && (
