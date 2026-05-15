@@ -637,48 +637,12 @@ function DraftListItem({ draft, isWinner, onLoad, onSetWinner, onDelete, onRemov
   );
 }
 
-/**
- * Extract the "## Visual direction" section from a draft.
- * Returns the section text if found, or null.
- */
-function extractVisualDirection(draftContent) {
-  if (!draftContent) return null;
-  // Match "## Visual direction" up to the next "## " heading, "---" divider, or end-of-string
-  const m = draftContent.match(/##\s+Visual\s+direction\s*\n([\s\S]+?)(?=\n##\s+|\n---\s*\n|\n---\s*$|$)/i);
-  if (m) {
-    const text = m[1].trim();
-    if (text.length > 5) return text;
-  }
-  return null;
-}
-
-/**
- * Build a fallback image prompt when no "Visual direction" section exists.
- * Pulls the must-say and first paragraph of slide body as context.
- */
-function buildFallbackImagePrompt(agentName, draftContent) {
-  const parts = [];
-  const mustSayMatch = draftContent.match(/\*\*Must-say:\*\*\s*"([^"]+)"/i);
-  if (mustSayMatch) parts.push(`Spirit to capture: "${mustSayMatch[1]}"`);
-
-  const bodyMatch = draftContent.match(/##\s+Slide body\s*\n([\s\S]+?)(?=\n##\s+|\n---\s*\n|$)/i);
-  if (bodyMatch) {
-    const firstPara = bodyMatch[1].trim().split(/\n\n/)[0].replace(/\n/g, " ").slice(0, 250);
-    if (firstPara) parts.push(`Context: ${firstPara}`);
-  }
-
-  return [
-    `Editorial visual for the ${agentName} slide.`,
-    ...parts,
-    "Style: magazine quality, on-brand, no embedded text unless the slide explicitly asks for it.",
-  ].join("\n\n");
-}
-
 function ImageGenerator({ agent, brief, currentDraft, visuals, onSaveVisual, onDeleteVisual }) {
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState("1024x1024");
   const [quality, setQuality] = useState("medium");
   const [generating, setGenerating] = useState(false);
+  const [buildingPrompt, setBuildingPrompt] = useState(false);
   const [localImages, setLocalImages] = useState([]); // fallback for when Blob isn't configured
   const [error, setError] = useState(null);
   const [warning, setWarning] = useState(null);
@@ -697,18 +661,53 @@ function ImageGenerator({ agent, brief, currentDraft, visuals, onSaveVisual, onD
     return `Visual for the ${agent.name} slide. Describe what you want to see.`;
   };
 
-  const seedFromDraft = () => {
+  // Calls Claude to convert the draft + brief into a polished gpt-image-2 prompt
+  // (concrete subject, lighting, composition, palette, camera notes, what to avoid).
+  const seedFromDraft = async () => {
     if (!currentDraft) {
       alert("No current draft to seed from. Iterate in the chat first or fork a saved draft.");
       return;
     }
-    const visualDirection = extractVisualDirection(currentDraft);
-    if (visualDirection) {
-      setPrompt(visualDirection);
-      setWarning(null);
-    } else {
-      setPrompt(buildFallbackImagePrompt(agent.name, currentDraft));
-      setWarning("No '## Visual direction' section found in the draft — used a fallback based on must-say + slide body. Edit if needed.");
+    if (buildingPrompt) return;
+    setBuildingPrompt(true);
+    setError(null);
+    setWarning(null);
+    try {
+      const promptText = [
+        "## BRAND BRIEF",
+        `- Product idea: ${brief.productIdea || "[unspecified]"}`,
+        `- Industry: ${brief.industry || "[unspecified]"}`,
+        `- Incumbent being disrupted: ${brief.incumbentName || "[unspecified]"}`,
+        `- Disruption vector: ${brief.disruptionVector || "[unspecified]"}`,
+        `- Geography: ${brief.geography || "[unspecified]"}`,
+        brief.founderStory ? `- Founder story: ${brief.founderStory}` : "",
+        "",
+        "## AGENT / SLIDE TYPE",
+        `${agent.id} — ${agent.name} (${agent.band} band, ${agent.weight})`,
+        "",
+        "## SLIDE CONTENT",
+        currentDraft,
+        "",
+        "Now write the image prompt. Output the prompt text only, nothing else.",
+      ].filter(Boolean).join("\n");
+
+      const result = await callClaude("image_prompt_builder", { promptText });
+      const generated = (result.text || "").trim();
+      if (!generated) {
+        throw new Error("Claude returned an empty prompt. Try again or write one manually.");
+      }
+      setPrompt(generated);
+
+      // Light warning if the draft had no Visual direction section — the prompt builder
+      // still works, but the team's intent might not be captured. Tell them.
+      const hasVisualDirection = /##\s+Visual\s+direction/i.test(currentDraft);
+      if (!hasVisualDirection) {
+        setWarning("Draft had no '## Visual direction' section — Claude inferred one from the must-say and body. Skim it before generating.");
+      }
+    } catch (e) {
+      setError(`Prompt builder failed: ${e.message}`);
+    } finally {
+      setBuildingPrompt(false);
     }
   };
 
@@ -847,8 +846,25 @@ function ImageGenerator({ agent, brief, currentDraft, visuals, onSaveVisual, onD
                 Image Prompt
               </label>
               {currentDraft && (
-                <button onClick={seedFromDraft} style={{ background: "transparent", border: "1px solid var(--border)", color: "var(--ink-soft)", padding: "3px 8px", cursor: "pointer", fontSize: 10, letterSpacing: "0.05em", fontFamily: "'JetBrains Mono', monospace" }}>
-                  SEED FROM VISUAL DIRECTION
+                <button
+                  onClick={seedFromDraft}
+                  disabled={buildingPrompt || generating}
+                  style={{
+                    background: "transparent",
+                    border: "1px solid var(--border)",
+                    color: buildingPrompt ? "var(--clay)" : "var(--ink-soft)",
+                    padding: "3px 8px",
+                    cursor: buildingPrompt || generating ? "wait" : "pointer",
+                    fontSize: 10,
+                    letterSpacing: "0.05em",
+                    fontFamily: "'JetBrains Mono', monospace",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                  }}
+                >
+                  {buildingPrompt ? <Loader2 size={10} className="spin-icon" /> : <Sparkles size={10} />}
+                  {buildingPrompt ? "BUILDING PROMPT…" : "BUILD PROMPT FROM DRAFT"}
                 </button>
               )}
             </div>

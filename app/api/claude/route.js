@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { AGENTS, buildSystemPromptForAgent } from "@/lib/agents";
-import { PROFESSOR_PROMPT, TOURNAMENT_PROMPT, ASHLEY_FINAL_REVIEW_PROMPT } from "@/lib/prompts";
+import { PROFESSOR_PROMPT, TOURNAMENT_PROMPT, ASHLEY_FINAL_REVIEW_PROMPT, IMAGE_PROMPT_BUILDER_PROMPT } from "@/lib/prompts";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -51,6 +51,10 @@ export async function POST(request) {
     } else if (mode === "ashley_final") {
       const { promptText } = body;
       system = ASHLEY_FINAL_REVIEW_PROMPT;
+      messages = [{ role: "user", content: promptText }];
+    } else if (mode === "image_prompt_builder") {
+      const { promptText } = body;
+      system = IMAGE_PROMPT_BUILDER_PROMPT;
       messages = [{ role: "user", content: promptText }];
     } else {
       return Response.json({ error: "Unknown mode" }, { status: 400 });
