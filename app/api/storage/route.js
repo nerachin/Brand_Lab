@@ -212,6 +212,70 @@ export async function POST(request) {
         return Response.json({ ok: true });
       }
 
+      case "healthCheck": {
+        // DIAGNOSTIC: report what's actually in Redis right now and which env vars
+        // are configured. Helps debug "save shows OK but reload shows empty" issues.
+        const briefRaw = await redis.get("brief");
+        let briefPresent = false;
+        let briefSummary = null;
+        if (briefRaw) {
+          briefPresent = true;
+          const parsed = typeof briefRaw === "string" ? JSON.parse(briefRaw) : briefRaw;
+          briefSummary = {
+            hasProductIdea: !!parsed?.brief?.productIdea,
+            hasIndustry: !!parsed?.brief?.industry,
+            lastEditedBy: parsed?.meta?.lastEditedBy || null,
+            lastEditedAt: parsed?.meta?.lastEditedAt || null,
+            productIdeaPreview: (parsed?.brief?.productIdea || "").slice(0, 60),
+          };
+        }
+
+        const draftKeys = await redis.keys("draft:*");
+        const winnerKeys = await redis.keys("winner:*");
+        const visualKeys = await redis.keys("visual:*");
+        const tournamentKeys = await redis.keys("tournament:*");
+        const coverPresent = !!(await redis.get("cover_image"));
+
+        // Read-after-write probe: write a sentinel value, immediately read it back.
+        // If write succeeds but read returns null → split-brain (different DBs for read vs write).
+        const probeKey = `__healthprobe_${Date.now()}`;
+        const probeValue = `probe_${Math.random().toString(36).slice(2)}`;
+        await redis.set(probeKey, probeValue);
+        const probeReadback = await redis.get(probeKey);
+        await redis.del(probeKey);
+        const readAfterWriteOK = probeReadback === probeValue;
+
+        return Response.json({
+          ok: true,
+          envVars: {
+            UPSTASH_REDIS_REST_URL: !!process.env.UPSTASH_REDIS_REST_URL,
+            UPSTASH_REDIS_REST_TOKEN: !!process.env.UPSTASH_REDIS_REST_TOKEN,
+            KV_REST_API_URL: !!process.env.KV_REST_API_URL,
+            KV_REST_API_TOKEN: !!process.env.KV_REST_API_TOKEN,
+            usingDirect: !!(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN),
+            usingMarketplace: !(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) && !!(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN),
+          },
+          keyCounts: {
+            drafts: draftKeys.length,
+            winners: winnerKeys.length,
+            visuals: visualKeys.length,
+            tournaments: tournamentKeys.length,
+          },
+          brief: {
+            present: briefPresent,
+            summary: briefSummary,
+          },
+          coverImage: { present: coverPresent },
+          readAfterWrite: {
+            ok: readAfterWriteOK,
+            note: readAfterWriteOK
+              ? "Write→read roundtrip works. Redis is consistent."
+              : "WRITE OK BUT READ DIDN'T RETURN THE VALUE. Likely split-brain — multiple Redis databases configured. Check env vars.",
+          },
+          serverTime: new Date().toISOString(),
+        });
+      }
+
       case "compactStorage": {
         // EMERGENCY action: walk every draft, visual, and cover image — strip the
         // base64 imageDataUrl from any record that already has a public URL.

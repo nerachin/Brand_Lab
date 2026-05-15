@@ -2010,23 +2010,73 @@ function ExportView({ brief, draftsByAgent, winners }) {
           <div style={{ color: "var(--ink-soft)", fontSize: 11, letterSpacing: "0.04em" }}>
             STORAGE MAINTENANCE · Run if saving fails or you hit Upstash quota
           </div>
-          <button
-            onClick={compactStorage}
-            disabled={compactStatus === "running"}
-            style={{
-              background: "transparent", border: "1px solid var(--ink-soft)", color: "var(--ink-soft)",
-              padding: "5px 12px", cursor: compactStatus === "running" ? "wait" : "pointer",
-              fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase",
-              display: "inline-flex", alignItems: "center", gap: 6,
-            }}
-          >
-            {compactStatus === "running" ? <Loader2 size={11} className="spin-icon" /> : <Zap size={11} />}
-            {compactStatus === "running" ? "COMPACTING…" : "COMPACT STORAGE"}
-          </button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={runHealthCheck}
+              disabled={healthResult === "running"}
+              style={{
+                background: "transparent", border: "1px solid var(--ink-soft)", color: "var(--ink-soft)",
+                padding: "5px 12px", cursor: healthResult === "running" ? "wait" : "pointer",
+                fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase",
+                display: "inline-flex", alignItems: "center", gap: 6,
+              }}
+            >
+              {healthResult === "running" ? <Loader2 size={11} className="spin-icon" /> : <AlertCircle size={11} />}
+              {healthResult === "running" ? "CHECKING…" : "HEALTH CHECK"}
+            </button>
+            <button
+              onClick={compactStorage}
+              disabled={compactStatus === "running"}
+              style={{
+                background: "transparent", border: "1px solid var(--ink-soft)", color: "var(--ink-soft)",
+                padding: "5px 12px", cursor: compactStatus === "running" ? "wait" : "pointer",
+                fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase",
+                display: "inline-flex", alignItems: "center", gap: 6,
+              }}
+            >
+              {compactStatus === "running" ? <Loader2 size={11} className="spin-icon" /> : <Zap size={11} />}
+              {compactStatus === "running" ? "COMPACTING…" : "COMPACT STORAGE"}
+            </button>
+          </div>
         </div>
         {compactStatus && compactStatus !== "running" && (
           <div style={{ marginTop: 8, fontSize: 11, color: compactStatus.startsWith("Failed") ? "var(--rose)" : "var(--olive)", lineHeight: 1.5 }}>
             {compactStatus.startsWith("Failed") ? "⚠ " : "✓ "}{compactStatus}
+          </div>
+        )}
+        {healthResult && healthResult !== "running" && (
+          <div style={{ marginTop: 10, padding: 10, background: "var(--paper)", border: "1px solid var(--border)", fontSize: 11, lineHeight: 1.6 }}>
+            {healthResult.error ? (
+              <div style={{ color: "var(--rose)" }}>⚠ Health check failed: {healthResult.error}</div>
+            ) : (
+              <>
+                <div style={{
+                  color: healthResult.readAfterWrite?.ok ? "var(--olive)" : "var(--rose)",
+                  fontWeight: 700, marginBottom: 6,
+                }}>
+                  {healthResult.readAfterWrite?.ok ? "✓ WRITE→READ OK" : "✗ SPLIT-BRAIN DETECTED"}
+                </div>
+                <div style={{ color: "var(--ink-soft)", marginBottom: 6 }}>
+                  {healthResult.readAfterWrite?.note}
+                </div>
+                <div style={{ color: "var(--ink-soft)" }}>
+                  <strong>Env vars in this Vercel deployment:</strong><br />
+                  &nbsp;&nbsp;UPSTASH_REDIS_REST_URL: {healthResult.envVars.UPSTASH_REDIS_REST_URL ? "✓ set" : "✗ missing"}<br />
+                  &nbsp;&nbsp;UPSTASH_REDIS_REST_TOKEN: {healthResult.envVars.UPSTASH_REDIS_REST_TOKEN ? "✓ set" : "✗ missing"}<br />
+                  &nbsp;&nbsp;KV_REST_API_URL: {healthResult.envVars.KV_REST_API_URL ? "✓ set" : "✗ missing"}<br />
+                  &nbsp;&nbsp;KV_REST_API_TOKEN: {healthResult.envVars.KV_REST_API_TOKEN ? "✓ set" : "✗ missing"}<br />
+                  &nbsp;&nbsp;<em>Using: {healthResult.envVars.usingDirect ? "UPSTASH direct" : healthResult.envVars.usingMarketplace ? "Vercel KV marketplace" : "unknown"}</em>
+                </div>
+                <div style={{ color: "var(--ink-soft)", marginTop: 6 }}>
+                  <strong>Redis contents right now:</strong><br />
+                  &nbsp;&nbsp;Brief present: {healthResult.brief.present ? `✓ yes (productIdea: "${healthResult.brief.summary?.productIdeaPreview || "—"}…", last edit by ${healthResult.brief.summary?.lastEditedBy || "?"})` : "✗ NO — brief is missing from Redis"}<br />
+                  &nbsp;&nbsp;Drafts: {healthResult.keyCounts.drafts}<br />
+                  &nbsp;&nbsp;Winners: {healthResult.keyCounts.winners}<br />
+                  &nbsp;&nbsp;Visuals: {healthResult.keyCounts.visuals}<br />
+                  &nbsp;&nbsp;Cover image: {healthResult.coverImage.present ? "✓ yes" : "—"}
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -2576,6 +2626,17 @@ export default function Page() {
       );
     } catch (e) {
       setCompactStatus("Failed: " + e.message);
+    }
+  };
+
+  const [healthResult, setHealthResult] = useState(null); // null | "running" | object
+  const runHealthCheck = async () => {
+    setHealthResult("running");
+    try {
+      const result = await callStorage("healthCheck");
+      setHealthResult(result);
+    } catch (e) {
+      setHealthResult({ error: e.message });
     }
   };
 
