@@ -691,10 +691,10 @@ function ImageGenerator({ agent, brief, currentDraft, visuals, onSaveVisual, onD
         "Now write the image prompt. Output the prompt text only, nothing else.",
       ].filter(Boolean).join("\n");
 
-      const result = await callClaude("image_prompt_builder", { promptText });
+      const result = await api("/api/prompt-builder", { promptText });
       const generated = (result.text || "").trim();
       if (!generated) {
-        throw new Error("Claude returned an empty prompt. Try again or write one manually.");
+        throw new Error("Empty response from prompt builder. Try again or write one manually.");
       }
       setPrompt(generated);
 
