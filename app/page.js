@@ -572,17 +572,36 @@ function ChatBubble({ role, content, author, timestamp, isLatest }) {
   );
 }
 
-function DraftListItem({ draft, isWinner, onLoad, onSetWinner, onDelete }) {
+function DraftListItem({ draft, isWinner, onLoad, onSetWinner, onDelete, onRemoveImage }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", background: isWinner ? "var(--olive-soft)" : "var(--paper)", border: `1px solid ${isWinner ? "var(--olive)" : "var(--border)"}`, marginBottom: 6 }}>
       {isWinner && <Crown size={14} color="var(--olive)" style={{ flexShrink: 0 }} />}
       {draft.imageDataUrl && (
-        <img
-          src={draft.imageDataUrl}
-          alt={draft.imageDescription || "draft image"}
-          title={draft.imageDescription || ""}
-          style={{ width: 38, height: 38, objectFit: "cover", border: "1px solid var(--border)", flexShrink: 0, background: "var(--bone)" }}
-        />
+        <div style={{ position: "relative", flexShrink: 0, lineHeight: 0 }}>
+          <img
+            src={draft.imageDataUrl}
+            alt={draft.imageDescription || "draft image"}
+            title={draft.imageDescription || ""}
+            style={{ width: 38, height: 38, objectFit: "cover", border: "1px solid var(--border)", display: "block", background: "var(--bone)" }}
+          />
+          {onRemoveImage && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onRemoveImage(); }}
+              title="Remove image (keeps the draft text)"
+              style={{
+                position: "absolute", top: -6, right: -6,
+                width: 18, height: 18, padding: 0,
+                background: "var(--ink)", color: "var(--bone)",
+                border: "1px solid var(--bone)", borderRadius: "50%",
+                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 11, lineHeight: 1, fontWeight: 700,
+                fontFamily: "'JetBrains Mono', monospace",
+              }}
+            >
+              ×
+            </button>
+          )}
+        </div>
       )}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
@@ -756,7 +775,7 @@ function ImageGenerator({ agent, brief, currentDraft }) {
   );
 }
 
-function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, workspace, onBack, onSendMessage, onSaveDraft, onSetWinner, onDeleteDraft, onLoadDraft, onRunTournament, tournamentResult, isWaiting, refreshing, onRefresh }) {
+function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, workspace, onBack, onSendMessage, onSaveDraft, onSetWinner, onDeleteDraft, onRemoveImage, onLoadDraft, onRunTournament, tournamentResult, isWaiting, refreshing, onRefresh }) {
   const [input, setInput] = useState("");
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [draftName, setDraftName] = useState("");
@@ -864,6 +883,7 @@ function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, w
               onLoad={() => onLoadDraft(d)}
               onSetWinner={() => onSetWinner(d.id)}
               onDelete={() => onDeleteDraft(d.id)}
+              onRemoveImage={() => onRemoveImage(d.id)}
             />
           ))
         )}
@@ -1262,13 +1282,25 @@ function ExportView({ brief, draftsByAgent, winners }) {
 
           if (hasImage) {
             try {
+              // pptxgenjs accepts the full data URL ("data:image/png;base64,...")
+              // — but NOT a `sizing` parameter combined with explicit w/h, which
+              // silently drops the image in some versions. Use plain w/h.
               slide.addImage({
                 data: draft.imageDataUrl,
-                x: 7.8, y: 1.7, w: 5.0, h: 5.2,
-                sizing: { type: "contain", w: 5.0, h: 5.2 },
+                x: 7.7,
+                y: 1.7,
+                w: 5.2,
+                h: 5.0,
               });
+              if (draft.imageDescription) {
+                slide.addText(draft.imageDescription, {
+                  x: 7.7, y: 6.75, w: 5.2, h: 0.3,
+                  fontFace: "Calibri", fontSize: 8, color: WARM_GRAY,
+                  italic: true, align: "center",
+                });
+              }
             } catch (e) {
-              console.warn("Failed to embed image:", e);
+              console.error(`Failed to embed image for ${agent.id}:`, e);
             }
           }
 
@@ -1342,12 +1374,12 @@ function ExportView({ brief, draftsByAgent, winners }) {
         </p>
         <button
           onClick={runAshleyFinalReview}
-          disabled={runningAshley || winnerCount === 0}
+          disabled={runningAshley || draftedCount === 0}
           style={{
-            background: !runningAshley && winnerCount > 0 ? "var(--ink)" : "var(--border)",
-            color: !runningAshley && winnerCount > 0 ? "var(--bone)" : "var(--warm-gray)",
+            background: !runningAshley && draftedCount > 0 ? "var(--ink)" : "var(--border)",
+            color: !runningAshley && draftedCount > 0 ? "var(--bone)" : "var(--warm-gray)",
             border: "none", padding: "11px 22px",
-            cursor: !runningAshley && winnerCount > 0 ? "pointer" : "not-allowed",
+            cursor: !runningAshley && draftedCount > 0 ? "pointer" : "not-allowed",
             fontSize: 12, display: "inline-flex", alignItems: "center", gap: 8,
             letterSpacing: "0.06em", textTransform: "uppercase",
           }}
@@ -1355,9 +1387,14 @@ function ExportView({ brief, draftsByAgent, winners }) {
           {runningAshley ? <Loader2 size={13} className="spin-icon" /> : <Sparkles size={13} />}
           {runningAshley ? "ASHLEY IS READING THE DECK…" : "RUN ASHLEY'S FINAL READ"}
         </button>
-        {winnerCount === 0 && (
+        {draftedCount === 0 && (
           <span style={{ marginLeft: 12, fontSize: 12, color: "var(--warm-gray)", fontStyle: "italic" }}>
-            Save at least one draft per section first.
+            Save at least one draft first.
+          </span>
+        )}
+        {draftedCount > 0 && draftedCount < AGENTS.length && (
+          <span style={{ marginLeft: 12, fontSize: 12, color: "var(--warm-gray)", fontStyle: "italic" }}>
+            {AGENTS.length - draftedCount} sections still empty — Ashley will note them as missing.
           </span>
         )}
         {ashleyError && (
@@ -1628,6 +1665,25 @@ export default function Page() {
     }
   };
 
+  const removeImageFromDraft = async (agentId, draftId) => {
+    if (!window.confirm("Remove the image from this draft? The text content stays. This affects everyone.")) return;
+    try {
+      const result = await callStorage("removeImage", { agentId, draftId });
+      // Server returns the cleaned draft; mirror locally
+      setDraftsByAgent((prev) => ({
+        ...prev,
+        [agentId]: (prev[agentId] || []).map((d) =>
+          d.id === draftId ? (result.draft || (() => {
+            const { imageDataUrl, imageDescription, ...rest } = d;
+            return rest;
+          })()) : d
+        ),
+      }));
+    } catch (e) {
+      alert("Failed to remove image: " + e.message);
+    }
+  };
+
   const setDraftAsWinner = async (agentId, draftId) => {
     try {
       await callStorage("setWinner", { agentId, draftId });
@@ -1743,6 +1799,7 @@ export default function Page() {
               onSaveDraft={(name, content, imgUrl, imgDesc) => saveDraft(openAgentId, name, content, imgUrl, imgDesc)}
               onSetWinner={(draftId) => setDraftAsWinner(openAgentId, draftId)}
               onDeleteDraft={(draftId) => deleteDraft(openAgentId, draftId)}
+              onRemoveImage={(draftId) => removeImageFromDraft(openAgentId, draftId)}
               onLoadDraft={(draft) => loadDraftIntoWorkspace(openAgentId, draft)}
               onRunTournament={() => runTournament(openAgentId)}
               tournamentResult={tournaments[openAgentId]}

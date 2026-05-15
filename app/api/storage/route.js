@@ -110,6 +110,23 @@ export async function POST(request) {
         return Response.json({ ok: true });
       }
 
+      case "removeImage": {
+        const { agentId, draftId } = body;
+        if (!agentId || !draftId) {
+          return Response.json({ error: "agentId and draftId required" }, { status: 400 });
+        }
+        const key = `draft:${agentId}:${draftId}`;
+        const raw = await redis.get(key);
+        if (!raw) {
+          return Response.json({ error: "draft not found" }, { status: 404 });
+        }
+        const draft = typeof raw === "string" ? JSON.parse(raw) : raw;
+        // Strip the image fields, keep everything else
+        const { imageDataUrl, imageDescription, ...rest } = draft;
+        await redis.set(key, JSON.stringify(rest));
+        return Response.json({ ok: true, draft: rest });
+      }
+
       case "setWinner": {
         const { agentId, draftId } = body;
         await redis.set(`winner:${agentId}`, draftId);
