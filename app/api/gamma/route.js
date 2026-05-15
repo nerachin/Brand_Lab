@@ -18,60 +18,144 @@ function getApiKey() {
 }
 
 /**
- * Build a Gamma-friendly markdown deck from the winning drafts.
- * Slide breaks are explicit \n---\n so Gamma's cardSplit:"inputTextBreaks" honors them.
- * Image URLs are inlined on their own line so Gamma picks them up.
+ * Pull just the slide-ready content from a draft, stripping all author scaffolding.
+ * Returns { title, mustSay, body } — body is truncated to ~50 words to keep cards tight.
  */
-function buildGammaMarkdown(brief, winningDrafts) {
+function extractSlideContent(draftContent) {
+  let title = "";
+  let mustSay = "";
+  let body = "";
+
+  // Title from the first "# Heading" line — strip any "Slide:" prefix
+  const titleMatch = draftContent.match(/^#\s+(.+)$/m);
+  if (titleMatch) {
+    title = titleMatch[1].replace(/^Slide\s*[:\-]\s*/i, "").trim();
+  }
+
+  // Must-say quote — keep just the quoted text, drop the label
+  const mustSayMatch = draftContent.match(/\*\*Must[- ]say:\*\*\s*"([^"]+)"/i);
+  if (mustSayMatch) mustSay = mustSayMatch[1].trim();
+
+  // Body — prefer "## Slide body" section, fall back to between-metadata content
+  const slideBodyMatch = draftContent.match(/##\s+Slide body\s*\n([\s\S]+?)(?=\n##\s+|\n---\s*\n|$)/i);
+  if (slideBodyMatch) {
+    body = slideBodyMatch[1].trim();
+  } else {
+    // Fallback: strip the heading + metadata block, then take content up to first ## section
+    let working = draftContent;
+    working = working.replace(/^#\s+.+$/m, "");
+    working = working.replace(/^\*\*Rubric:\*\*.*$/gm, "");
+    working = working.replace(/^\*\*Must[- ]say:\*\*.*$/gm, "");
+    working = working.replace(/^\*\*Talk time:\*\*.*$/gm, "");
+    working = working.split(/##\s+/)[0];
+    body = working.trim();
+  }
+
+  // Hard density cap — keep things tight. Take the first paragraph plus up to 4 bullets.
+  body = tightenBody(body);
+
+  return { title, mustSay, body };
+}
+
+/**
+ * Trim a body to slide-appropriate density: first paragraph + up to 4 bullets,
+ * total word cap ~60 words. Prevents Gamma from rendering walls of text.
+ */
+function tightenBody(text) {
+  if (!text) return "";
+  // Normalize line endings, collapse triple-newlines
+  let t = text.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+
+  // Split into blocks separated by blank lines
+  const blocks = t.split(/\n\n+/);
+
+  const out = [];
+  let wordBudget = 60;
+
+  for (const block of blocks) {
+    if (wordBudget <= 0) break;
+
+    const trimmedBlock = block.trim();
+    if (!trimmedBlock) continue;
+
+    // Is this a bullet/list block? (starts with "-" or "*" or "•")
+    if (/^[-*•]\s+/.test(trimmedBlock)) {
+      const bullets = trimmedBlock.split(/\n/).filter((l) => /^[-*•]\s+/.test(l.trim()));
+      const keep = [];
+      for (const b of bullets.slice(0, 4)) {
+        const words = b.split(/\s+/).length;
+        if (words > wordBudget) break;
+        keep.push(b);
+        wordBudget -= words;
+      }
+      if (keep.length) out.push(keep.join("\n"));
+      continue;
+    }
+
+    // Regular paragraph — truncate to remaining budget
+    const words = trimmedBlock.split(/\s+/);
+    if (words.length <= wordBudget) {
+      out.push(trimmedBlock);
+      wordBudget -= words.length;
+    } else {
+      out.push(words.slice(0, wordBudget).join(" ") + "…");
+      wordBudget = 0;
+    }
+  }
+
+  return out.join("\n\n");
+}
+
+/**
+ * Build a Gamma-friendly markdown deck from the winning drafts.
+ * Image URLs come from the pre-resolved imageUrlByAgent map (built by the route).
+ * Slide breaks are explicit \n---\n so Gamma's cardSplit:"inputTextBreaks" honors them.
+ */
+function buildGammaMarkdown(brief, winningDrafts, imageUrlByAgent) {
   const lines = [];
 
-  // ===== Title card =====
-  lines.push(`# ${brief.productIdea || "Brand Experience Deck"}`);
-  if (brief.incumbentName && brief.industry && brief.disruptionVector) {
+  // ===== Title card — deliberately minimal =====
+  lines.push(`# ${(brief.productIdea || "Brand Experience").slice(0, 80)}`);
+  if (brief.incumbentName && brief.industry) {
     lines.push("");
-    lines.push(
-      `Disrupting **${brief.incumbentName}** in **${brief.industry}** via ${brief.disruptionVector}.`
-    );
+    lines.push(`Disrupting ${brief.incumbentName} in ${brief.industry}.`);
   }
-  lines.push("");
-  lines.push("Kellogg–Schulich EMBA · Designing Brand Experiences");
   lines.push("\n---\n");
 
-  // ===== One section per agent =====
+  // ===== One card per section, tightly composed =====
   for (const agent of AGENTS) {
     const draft = winningDrafts[agent.id];
     if (!draft) continue;
 
-    // Strip the agent-specific metadata lines (rubric/talk-time/etc) — Gamma doesn't need
-    // them on the slide; they're just author scaffolding.
-    let body = String(draft.content || "");
-    body = body.replace(/^\*\*Rubric:\*\*.*$/gm, "");
-    body = body.replace(/^\*\*Talk time:\*\*.*$/gm, "");
-    // Keep "Must-say:" — Gamma will render it as a callout if formatted nicely
-    // Pull out Speaker notes + Visual direction; they're not for the slide
-    body = body.split(/##\s+Speaker notes/i)[0];
-    body = body.split(/##\s+Visual direction/i)[0];
-    body = body.split(/##\s+Risks/i)[0];
-    body = body.replace(/\n{3,}/g, "\n\n").trim();
+    const { title, mustSay, body } = extractSlideContent(draft.content);
 
-    // If the body contains its own slide breaks (multi-slide agents like A1/A6/A9),
-    // honor them as-is. Otherwise this is one slide.
-    lines.push(body);
+    if (title) {
+      lines.push(`# ${title}`);
+    } else {
+      lines.push(`# ${agent.name}`);
+    }
 
-    // Inline the image URL on its own line so Gamma fetches it.
-    if (draft.imagePublicUrl) {
+    if (mustSay) {
       lines.push("");
-      lines.push(draft.imagePublicUrl);
-      if (draft.imageDescription) {
-        lines.push("");
-        lines.push(`*${draft.imageDescription}*`);
-      }
+      lines.push(`> ${mustSay}`);
+    }
+
+    if (body) {
+      lines.push("");
+      lines.push(body);
+    }
+
+    // Inline image URL from resolver (draft → gallery → none)
+    const imageUrl = imageUrlByAgent[agent.id];
+    if (imageUrl) {
+      lines.push("");
+      lines.push(imageUrl);
     }
 
     lines.push("\n---\n");
   }
 
-  // ===== Closing card =====
+  // ===== Closing card — minimal =====
   lines.push("# Thank you");
   lines.push("");
   lines.push("Questions?");
@@ -80,31 +164,76 @@ function buildGammaMarkdown(brief, winningDrafts) {
 }
 
 /**
- * Walk every draft. For any draft that has imageDataUrl but not imagePublicUrl,
- * upload to Blob and write the URL back to Redis. Returns the updated drafts.
- * This makes the Gamma flow work for drafts created before Blob hosting existed.
+ * Resolve the best image URL for a given agent's slide.
+ *
+ * Priority:
+ *  1. Winning draft's image (imagePublicUrl, or upload imageDataUrl if needed)
+ *  2. Latest gallery visual for this agent (imageUrl, or upload imageDataUrl)
+ *  3. null — no image available
+ *
+ * "Stale URL" handling: if we have the base64 imageDataUrl available alongside
+ * a public URL, we re-upload to be safe. This is cheap insurance against URLs
+ * that became dead (e.g. user recreated the Blob store and old URLs now 404).
+ *
+ * Returns { url, source, agentId, error? } so the route can report diagnostics.
  */
-async function backfillImageUrls(redis, draftsByAgent) {
-  const updated = JSON.parse(JSON.stringify(draftsByAgent)); // deep clone
-  for (const agentId of Object.keys(updated)) {
-    for (const draft of updated[agentId]) {
-      if (draft.imageDataUrl && !draft.imagePublicUrl) {
-        try {
-          const url = await uploadBase64ImageToBlob(
-            draft.imageDataUrl,
-            (draft.name || "img").slice(0, 20)
-          );
-          draft.imagePublicUrl = url;
-          // Persist back to Redis so we don't re-upload next time
-          await redis.set(`draft:${draft.agentId}:${draft.id}`, JSON.stringify(draft));
-        } catch (e) {
-          console.warn(`Backfill upload failed for draft ${draft.id}:`, e.message);
-          // Continue — Gamma will just generate without this image
+async function resolveImageForAgent({ agentId, winningDraft, agentVisuals, redis }) {
+  const result = { agentId, url: null, source: "none", error: null };
+
+  // ---- Path 1: Image attached to the winning draft ----
+  if (winningDraft) {
+    // If we have the base64 data, re-upload to dodge stale URLs from a previous Blob store
+    if (winningDraft.imageDataUrl) {
+      try {
+        const fresh = await uploadBase64ImageToBlob(
+          winningDraft.imageDataUrl,
+          `${agentId}_${(winningDraft.name || "draft").slice(0, 20)}`
+        );
+        // Persist fresh URL back to Redis so future runs don't re-upload
+        const updated = { ...winningDraft, imagePublicUrl: fresh };
+        await redis.set(`draft:${winningDraft.agentId}:${winningDraft.id}`, JSON.stringify(updated));
+        return { ...result, url: fresh, source: "draft" };
+      } catch (e) {
+        // Re-upload failed — try existing URL if any
+        if (winningDraft.imagePublicUrl) {
+          return { ...result, url: winningDraft.imagePublicUrl, source: "draft-cached", error: `re-upload failed: ${e.message}` };
         }
+        // Fall through to gallery
+        result.error = `draft image upload failed: ${e.message}`;
       }
+    } else if (winningDraft.imagePublicUrl) {
+      // Public URL but no base64 — trust it and hope it's still valid
+      return { ...result, url: winningDraft.imagePublicUrl, source: "draft-cached" };
     }
   }
-  return updated;
+
+  // ---- Path 2: Latest gallery visual for this agent ----
+  if (agentVisuals && agentVisuals.length > 0) {
+    // Sort by createdAt descending; pick the most recent
+    const latest = [...agentVisuals].sort((a, b) => b.createdAt - a.createdAt)[0];
+
+    if (latest.imageDataUrl) {
+      try {
+        const fresh = await uploadBase64ImageToBlob(
+          latest.imageDataUrl,
+          `${agentId}_gallery`
+        );
+        // Persist fresh URL back
+        const updated = { ...latest, imageUrl: fresh };
+        await redis.set(`visual:${latest.agentId}:${latest.id}`, JSON.stringify(updated));
+        return { ...result, url: fresh, source: "gallery" };
+      } catch (e) {
+        if (latest.imageUrl) {
+          return { ...result, url: latest.imageUrl, source: "gallery-cached", error: `re-upload failed: ${e.message}` };
+        }
+        return { ...result, source: "none", error: `gallery image upload failed: ${e.message}` };
+      }
+    } else if (latest.imageUrl) {
+      return { ...result, url: latest.imageUrl, source: "gallery-cached" };
+    }
+  }
+
+  return result; // no image found
 }
 
 export async function POST(request) {
@@ -122,10 +251,11 @@ export async function POST(request) {
       const apiKey = getApiKey();
       const redis = getRedis();
 
-      // Load brief + winners + drafts from Redis
+      // Load brief + winners + drafts + visuals from Redis
       const briefRaw = await redis.get("brief");
       const draftKeys = await redis.keys("draft:*");
       const winnerKeys = await redis.keys("winner:*");
+      const visualKeys = await redis.keys("visual:*");
 
       let brief = {};
       if (briefRaw) {
@@ -156,13 +286,22 @@ export async function POST(request) {
         }
       }
 
-      // Backfill any base64-only images → public Blob URLs
-      const filledDrafts = await backfillImageUrls(redis, draftsByAgent);
+      const visualsByAgent = {};
+      if (visualKeys.length > 0) {
+        const vals = await redis.mget(...visualKeys);
+        for (let i = 0; i < visualKeys.length; i++) {
+          const v = vals[i];
+          if (!v) continue;
+          const visual = typeof v === "string" ? JSON.parse(v) : v;
+          if (!visualsByAgent[visual.agentId]) visualsByAgent[visual.agentId] = [];
+          visualsByAgent[visual.agentId].push(visual);
+        }
+      }
 
       // Pick winning draft per section (winner if set, else most recent)
       const winningDrafts = {};
       for (const agent of AGENTS) {
-        const agentDrafts = filledDrafts[agent.id] || [];
+        const agentDrafts = draftsByAgent[agent.id] || [];
         if (agentDrafts.length === 0) continue;
         const winnerId = winners[agent.id];
         const winning = winnerId
@@ -178,21 +317,75 @@ export async function POST(request) {
         );
       }
 
-      const markdown = buildGammaMarkdown(brief, winningDrafts);
+      // ===== Resolve one image URL per agent =====
+      // Each agent: try draft image first, fall back to latest gallery visual.
+      // Re-uploads from base64 when available, to dodge stale URLs from old Blob stores.
+      const imageUrlByAgent = {};
+      const imageDiagnostics = []; // { agentId, agentName, source, error? }
+
+      for (const agent of AGENTS) {
+        const winningDraft = winningDrafts[agent.id];
+        if (!winningDraft) continue;
+
+        const resolution = await resolveImageForAgent({
+          agentId: agent.id,
+          winningDraft,
+          agentVisuals: visualsByAgent[agent.id],
+          redis,
+        });
+
+        if (resolution.url) {
+          imageUrlByAgent[agent.id] = resolution.url;
+        }
+        imageDiagnostics.push({
+          agentId: agent.id,
+          agentName: agent.name,
+          source: resolution.source, // "draft" | "draft-cached" | "gallery" | "gallery-cached" | "none"
+          ...(resolution.error ? { error: resolution.error } : {}),
+        });
+      }
+
+      const imagesResolved = Object.keys(imageUrlByAgent).length;
+      const imagesPossible = Object.keys(winningDrafts).length;
+
+      const markdown = buildGammaMarkdown(brief, winningDrafts, imageUrlByAgent);
 
       // Optional theme override from body (lets you pick a Gamma theme via UI later)
       const themeId = body.themeId || undefined;
 
       const payload = {
         inputText: markdown,
-        textMode: "preserve",
+        textMode: "preserve", // keep the team's exact wording
         format: "presentation",
         cardSplit: "inputTextBreaks",
         cardOptions: { dimensions: "16x9" },
         imageOptions: { source: "noImages" }, // we provide our own
+        textOptions: {
+          amount: "brief", // tight cards, not walls of text
+          tone: "restrained, editorial, professional, confident",
+          audience: "EMBA professors and senior executives reviewing an MBA brand-strategy capstone pitch",
+        },
         exportAs: "pptx",
-        additionalInstructions:
-          "Editorial layout. Bold serif headlines, generous whitespace, image on the right when present. Confident, restrained tone — this is an MBA strategy pitch, not a startup deck. Do not add stock photos or filler imagery.",
+        additionalInstructions: [
+          "STRICT DESIGN CONSTRAINTS — enforce across every card:",
+          "",
+          "Typography: use ONE typeface family for all cards. Headlines in a serif, body in the same serif (or in ONE complementary sans-serif). Do NOT mix three or more type families across the deck.",
+          "Type sizes: maximum three sizes total across the deck — display (headline), body, caption. Do not vary headline size from card to card.",
+          "",
+          "Palette: restrained, maximum 2 accent colors plus neutrals (cream/bone/ink). The same accent color used consistently for emphasis. NO rainbow, NO per-card color shifts, NO gradient backgrounds.",
+          "",
+          "Layout: consistent across cards. Bold headline at top, supporting body below, image to the right when one is present. Same composition logic on every card — do not let Gamma choose a different layout per card.",
+          "",
+          "Density: each card carries ONE key idea. Generous whitespace. Body text capped at ~40 words. No card should feel crowded.",
+          "",
+          "Pull-quotes: render blockquote lines (lines starting with '>') as a single large italic pull-quote — that line IS the slide's hero text. Do not wrap it with extra body underneath.",
+          "",
+          "Forbidden: emojis, decorative icons, geometric shapes, background patterns, textures, stock photography, illustration filler, oversaturated color, AI-template gloss, startup-deck aesthetics.",
+          "",
+          "Register: think Aesop, Cereal Magazine, MIT Sloan Review, A24 — NOT pitch deck, NOT corporate template, NOT consumer-app marketing.",
+          "",
+          "This is an MBA strategy capstone presented to professors. Restraint over novelty. Confidence over decoration.",
+        ].join("\n"),
         ...(themeId ? { themeId } : {}),
       };
 
@@ -217,6 +410,9 @@ export async function POST(request) {
         generationId: json.generationId,
         warnings: json.warnings,
         sectionsIncluded: Object.keys(winningDrafts).length,
+        imagesResolved,
+        imagesPossible,
+        imageDiagnostics,
       });
     }
 

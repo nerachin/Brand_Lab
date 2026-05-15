@@ -1505,11 +1505,11 @@ function ExportView({ brief, draftsByAgent, winners }) {
     const startTime = Date.now();
 
     try {
-      // Step 1: kick off the generation (server reads from Redis, builds markdown,
-      // backfills any base64-only images to Blob, POSTs to Gamma)
+      // Step 1: kick off the generation (server resolves images, builds markdown,
+      // POSTs to Gamma). The start response carries image-resolution diagnostics.
       const startRes = await callGamma("start", {});
       if (startRes.error) throw new Error(startRes.error);
-      const { generationId } = startRes;
+      const { generationId, imagesResolved, imagesPossible, imageDiagnostics } = startRes;
       if (!generationId) throw new Error("No generationId returned from Gamma");
 
       // Step 2: poll on the client. Vercel Hobby caps functions at 60s; Gamma
@@ -1532,6 +1532,9 @@ function ExportView({ brief, draftsByAgent, winners }) {
             gammaUrl: statusRes.gammaUrl,
             exportUrl: statusRes.exportUrl,
             credits: statusRes.credits,
+            imagesResolved,
+            imagesPossible,
+            imageDiagnostics,
           });
           setGammaStatus("done");
           return;
@@ -1738,6 +1741,49 @@ function ExportView({ brief, draftsByAgent, winners }) {
                 </span>
               )}
             </div>
+
+            {/* Image diagnostics — shows which sections got images, where they came from */}
+            {gammaResult.imageDiagnostics && gammaResult.imageDiagnostics.length > 0 && (
+              <div style={{ marginTop: 14, padding: "10px 14px", background: "var(--paper)", border: "1px solid var(--border)" }}>
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, letterSpacing: "0.1em", color: "var(--ink-soft)", marginBottom: 8, fontWeight: 600 }}>
+                  IMAGES SHIPPED: {gammaResult.imagesResolved}/{gammaResult.imagesPossible}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 6, fontSize: 11, fontFamily: "'JetBrains Mono', monospace" }}>
+                  {gammaResult.imageDiagnostics.map((d) => {
+                    const ok = d.source !== "none";
+                    const fromGallery = d.source === "gallery" || d.source === "gallery-cached";
+                    return (
+                      <div
+                        key={d.agentId}
+                        title={d.error || d.source}
+                        style={{
+                          display: "flex", alignItems: "center", gap: 6,
+                          color: ok ? "var(--ink-soft)" : "var(--warm-gray)",
+                        }}
+                      >
+                        <span style={{
+                          width: 8, height: 8, borderRadius: "50%",
+                          background: ok ? (fromGallery ? "var(--gold)" : "var(--olive)") : "var(--rose)",
+                          flexShrink: 0,
+                        }} />
+                        <span style={{ fontSize: 10, letterSpacing: "0.04em" }}>
+                          {d.agentId} {d.agentName.toUpperCase().slice(0, 14)}
+                        </span>
+                        <span style={{ fontSize: 9, color: "var(--warm-gray)", marginLeft: "auto" }}>
+                          {d.source === "draft" ? "DRAFT" : d.source === "draft-cached" ? "DRAFT*" : d.source === "gallery" ? "GALLERY" : d.source === "gallery-cached" ? "GALLERY*" : "—"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                {gammaResult.imagesResolved < gammaResult.imagesPossible && (
+                  <div style={{ marginTop: 10, fontSize: 11, color: "var(--ink-soft)", lineHeight: 1.5, fontFamily: "'Newsreader', Georgia, serif", fontStyle: "italic" }}>
+                    Sections without images: generate one via the Visuals panel inside that agent's workspace, then re-run.
+                  </div>
+                )}
+              </div>
+            )}
+
             <p style={{ fontSize: 11, color: "var(--warm-gray)", marginTop: 12, marginBottom: 0, lineHeight: 1.5 }}>
               Export URL expires in ~1 week. Download promptly. Open in PowerPoint and expect ~15 min of polish (Gamma's card layouts don't always map cleanly to 16:9 — text may need nudging).
             </p>
