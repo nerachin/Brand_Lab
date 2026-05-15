@@ -1462,7 +1462,7 @@ function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, w
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={isWaiting}
-              title="Attach images or PDFs (max 5MB image, 10MB PDF, ~3MB total)"
+              title="Attach images or PDFs. Images are read directly. PDFs are text-extracted server-side — works for text-heavy PDFs (briefs, reports). Scanned/image-only PDFs: screenshot them and attach as image instead. Limits: 5MB image, 10MB PDF, ~3MB total."
               style={{
                 background: "var(--paper)", border: "1px solid var(--border)",
                 color: "var(--ink-soft)", padding: "0 12px",
@@ -2447,13 +2447,13 @@ export default function Page() {
     setIsWaiting(true);
 
     try {
-      const { text } = await callClaude("agent_chat", {
+      const { text } = await callOpenAI("agent_chat", {
         agentId,
         brief,
         upstreamLocks,
         chatHistory: ws.chatHistory.map((m) => ({ role: m.role, content: m.content })),
         newUserMessage: userMessage,
-        // Full base64 attachments go to Claude for this turn only
+        // Full base64 attachments go to OpenAI for this turn only
         attachments: attachments || [],
       });
       const newAssistantMsg = { role: "assistant", content: text, timestamp: Date.now() };
