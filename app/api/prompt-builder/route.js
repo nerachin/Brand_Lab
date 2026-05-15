@@ -35,15 +35,28 @@ export async function POST(request) {
 
     const client = getClient();
 
-    const result = await client.chat.completions.create({
+    // Same model compatibility logic as /api/openai — GPT-5 family uses
+    // max_completion_tokens, o-series also drops temperature
+    const isGpt5OrNewer = /^(gpt-5|o\d)/i.test(DEFAULT_MODEL);
+    const isReasoningOnly = /^o\d/i.test(DEFAULT_MODEL);
+
+    const requestParams = {
       model: DEFAULT_MODEL,
       messages: [
         { role: "system", content: IMAGE_PROMPT_BUILDER_PROMPT },
         { role: "user", content: promptText },
       ],
-      temperature: 0.7, // some creativity, still reliable
-      max_tokens: 800,  // 80-150 word prompts comfortably fit
-    });
+    };
+    if (isGpt5OrNewer) {
+      requestParams.max_completion_tokens = 800;
+    } else {
+      requestParams.max_tokens = 800;
+    }
+    if (!isReasoningOnly) {
+      requestParams.temperature = 0.7;
+    }
+
+    const result = await client.chat.completions.create(requestParams);
 
     const text = result.choices?.[0]?.message?.content?.trim() || "";
     if (!text) {

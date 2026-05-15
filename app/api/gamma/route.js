@@ -109,9 +109,10 @@ function tightenBody(text) {
 /**
  * Build a Gamma-friendly markdown deck from the winning drafts.
  * Image URLs come from the pre-resolved imageUrlByAgent map (built by the route).
+ * coverImageUrl (optional) is inlined on the title card.
  * Slide breaks are explicit \n---\n so Gamma's cardSplit:"inputTextBreaks" honors them.
  */
-function buildGammaMarkdown(brief, winningDrafts, imageUrlByAgent) {
+function buildGammaMarkdown(brief, winningDrafts, imageUrlByAgent, coverImageUrl) {
   const lines = [];
 
   // ===== Title card — deliberately minimal =====
@@ -119,6 +120,11 @@ function buildGammaMarkdown(brief, winningDrafts, imageUrlByAgent) {
   if (brief.incumbentName && brief.industry) {
     lines.push("");
     lines.push(`Disrupting ${brief.incumbentName} in ${brief.industry}.`);
+  }
+  // Hero cover image on title slide if one exists
+  if (coverImageUrl) {
+    lines.push("");
+    lines.push(coverImageUrl);
   }
   lines.push("\n---\n");
 
@@ -348,7 +354,32 @@ export async function POST(request) {
       const imagesResolved = Object.keys(imageUrlByAgent).length;
       const imagesPossible = Object.keys(winningDrafts).length;
 
-      const markdown = buildGammaMarkdown(brief, winningDrafts, imageUrlByAgent);
+      // ===== Resolve cover image (single slot, optional) =====
+      // Re-upload from base64 to dodge stale URLs from old Blob stores, same
+      // strategy as per-section images. Silent failure → no cover, deck still ships.
+      let coverImageUrl = null;
+      let coverImageStatus = "none";
+      const coverImageRaw = await redis.get("cover_image");
+      if (coverImageRaw) {
+        const coverImage = typeof coverImageRaw === "string" ? JSON.parse(coverImageRaw) : coverImageRaw;
+        if (coverImage.imageDataUrl) {
+          try {
+            coverImageUrl = await uploadBase64ImageToBlob(coverImage.imageDataUrl, "cover");
+            await redis.set("cover_image", JSON.stringify({ ...coverImage, imageUrl: coverImageUrl }));
+            coverImageStatus = "fresh";
+          } catch (e) {
+            if (coverImage.imageUrl) {
+              coverImageUrl = coverImage.imageUrl;
+              coverImageStatus = "cached";
+            }
+          }
+        } else if (coverImage.imageUrl) {
+          coverImageUrl = coverImage.imageUrl;
+          coverImageStatus = "cached";
+        }
+      }
+
+      const markdown = buildGammaMarkdown(brief, winningDrafts, imageUrlByAgent, coverImageUrl);
 
       // Optional theme override from body (lets you pick a Gamma theme via UI later)
       const themeId = body.themeId || undefined;
@@ -413,6 +444,7 @@ export async function POST(request) {
         imagesResolved,
         imagesPossible,
         imageDiagnostics,
+        coverImageStatus, // "fresh" | "cached" | "none"
       });
     }
 

@@ -5,7 +5,8 @@ import {
   Play, Check, AlertCircle, Loader2, ChevronDown, ChevronRight,
   Copy, RefreshCw, FileText, Sparkles, Lock, Download, Upload, Trash2,
   ChevronsRight, BookOpen, GraduationCap, Zap, MessageSquare, Crown,
-  ArrowLeft, Send, Save, User, Plus, Trophy, Eye, GitBranch, Image as ImageIcon, Wand2
+  ArrowLeft, Send, Save, User, Plus, Trophy, Eye, GitBranch, Image as ImageIcon, Wand2,
+  Paperclip, X
 } from "lucide-react";
 import { AGENTS, buildBriefBlock } from "@/lib/agents";
 
@@ -550,7 +551,7 @@ function PipelineView({ brief, draftsByAgent, winners, onOpenAgent, onRefresh, r
   );
 }
 
-function ChatBubble({ role, content, author, timestamp, isLatest }) {
+function ChatBubble({ role, content, author, timestamp, attachments, isLatest }) {
   const isUser = role === "user";
   return (
     <div style={{ display: "flex", flexDirection: isUser ? "row-reverse" : "row", marginBottom: 14, gap: 10 }}>
@@ -575,6 +576,33 @@ function ChatBubble({ role, content, author, timestamp, isLatest }) {
             )
           )}
         </div>
+        {/* Attachment chips beneath user messages */}
+        {isUser && attachments && attachments.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 5, justifyContent: "flex-end" }}>
+            {attachments.map((att, i) => {
+              const isImg = att.type?.startsWith("image/");
+              const sizeKB = Math.round((att.size || 0) / 1024);
+              return (
+                <div
+                  key={i}
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: 4,
+                    background: "var(--bone-light)", padding: "2px 6px",
+                    border: "1px solid var(--border)", fontSize: 10,
+                    fontFamily: "'JetBrains Mono', monospace",
+                    color: "var(--ink-soft)",
+                  }}
+                >
+                  {isImg ? <ImageIcon size={9} /> : <FileText size={9} />}
+                  <span>{att.name}</span>
+                  <span style={{ color: "var(--warm-gray)" }}>
+                    {sizeKB < 1024 ? `${sizeKB}KB` : `${(sizeKB / 1024).toFixed(1)}MB`}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -640,6 +668,216 @@ function DraftListItem({ draft, isWinner, onLoad, onSetWinner, onDelete, onRemov
     </div>
   );
 }
+
+/**
+ * Cover Image generator for the deck title slide.
+ * Single-slot persisted image: generating a new one replaces the existing.
+ * Uses the same /api/image + Blob hosting + prompt-builder flow as per-section visuals.
+ */
+function CoverImageGenerator({ brief, coverImage, onSaveCoverImage, onDeleteCoverImage }) {
+  const [prompt, setPrompt] = useState("");
+  const [size, setSize] = useState("1536x1024"); // landscape default — best for title slides
+  const [quality, setQuality] = useState("high");
+  const [generating, setGenerating] = useState(false);
+  const [buildingPrompt, setBuildingPrompt] = useState(false);
+  const [error, setError] = useState(null);
+  const [warning, setWarning] = useState(null);
+
+  const buildPromptFromBrief = async () => {
+    if (!brief?.productIdea && !brief?.industry) {
+      alert("Fill in the Brief tab first — at minimum product idea and industry.");
+      return;
+    }
+    setBuildingPrompt(true);
+    setError(null);
+    setWarning(null);
+    try {
+      // Use a synthetic "COVER" agent context so the prompt builder uses the cover anchor
+      const promptText = [
+        "## BRAND BRIEF",
+        `- Product idea: ${brief.productIdea || "[unspecified]"}`,
+        `- Industry: ${brief.industry || "[unspecified]"}`,
+        `- Incumbent being disrupted: ${brief.incumbentName || "[unspecified]"}`,
+        `- Disruption vector: ${brief.disruptionVector || "[unspecified]"}`,
+        `- Geography: ${brief.geography || "[unspecified]"}`,
+        brief.founderStory ? `- Founder story: ${brief.founderStory}` : "",
+        "",
+        "## AGENT / SLIDE TYPE",
+        "COVER — hero image for the deck title slide",
+        "",
+        "## SLIDE CONTENT",
+        "# " + (brief.productIdea || "Brand Experience"),
+        "",
+        brief.incumbentName && brief.industry
+          ? `Disrupting ${brief.incumbentName} in ${brief.industry}.`
+          : "Title slide of the brand strategy capstone deck.",
+        "",
+        "## Visual direction",
+        "Hero cover image. Must embody the brand's reason for being at a single iconic glance.",
+        "Landscape orientation, magazine-cover composition. Strong single subject, generous",
+        "negative space (Gamma will overlay the title text). No embedded text.",
+        "",
+        "Now write the image prompt. Output the prompt text only, nothing else.",
+      ].filter(Boolean).join("\n");
+
+      const result = await api("/api/prompt-builder", { promptText });
+      const generated = (result.text || "").trim();
+      if (!generated) throw new Error("Empty response from prompt builder.");
+      setPrompt(generated);
+    } catch (e) {
+      setError(`Prompt builder failed: ${e.message}`);
+    } finally {
+      setBuildingPrompt(false);
+    }
+  };
+
+  const generate = async () => {
+    if (!prompt.trim() || generating) return;
+    setGenerating(true);
+    setError(null);
+    setWarning(null);
+    try {
+      const result = await api("/api/image", { prompt: prompt.trim(), size, quality });
+      if (result.error) throw new Error(result.error);
+
+      await onSaveCoverImage({
+        prompt: prompt.trim(),
+        imageDataUrl: result.image,
+        imageUrl: result.imageUrl || null,
+        size,
+        quality,
+      });
+
+      if (!result.imageUrl) {
+        setWarning("Image generated and saved locally, but no public URL was created — won't show in Gamma. Check Vercel Blob is enabled as PUBLIC.");
+      }
+      setPrompt(""); // clear prompt after successful save
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const displaySrc = coverImage?.imageDataUrl || coverImage?.imageUrl;
+
+  return (
+    <div style={{ background: "var(--paper)", border: "1px solid var(--ink)", borderLeft: "4px solid var(--olive)", padding: "24px 28px", marginBottom: 28 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+        <ImageIcon size={18} color="var(--olive)" />
+        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.15em", color: "var(--olive)", fontWeight: 600 }}>
+          COVER IMAGE · TITLE SLIDE HERO
+        </div>
+      </div>
+      <h3 style={{ fontFamily: "'Fraunces', serif", fontSize: 24, fontWeight: 600, margin: "0 0 8px", letterSpacing: "-0.01em" }}>
+        The image that opens your deck
+      </h3>
+      <p style={{ color: "var(--ink-soft)", fontSize: 14, marginBottom: 16, lineHeight: 1.6, maxWidth: 720 }}>
+        Single hero image that anchors the title slide. Inlined automatically when you generate via Gamma. Landscape orientation works best — leaves room for the title overlay.
+      </p>
+
+      {/* Existing cover preview */}
+      {coverImage && displaySrc && (
+        <div style={{ marginBottom: 18, background: "var(--bone-light)", padding: 12, border: "1px solid var(--border)" }}>
+          <div style={{ display: "flex", gap: 14, alignItems: "flex-start", flexWrap: "wrap" }}>
+            <img
+              src={displaySrc}
+              alt="Cover image"
+              style={{ maxWidth: 320, maxHeight: 220, objectFit: "cover", border: "1px solid var(--border)", flexShrink: 0 }}
+            />
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "var(--warm-gray)", letterSpacing: "0.06em", marginBottom: 6 }}>
+                CURRENT COVER · BY {(coverImage.author || "").toUpperCase()}
+              </div>
+              <p style={{ fontSize: 12, color: "var(--ink-soft)", lineHeight: 1.55, marginTop: 0, marginBottom: 12, fontStyle: "italic" }}>
+                {coverImage.prompt && coverImage.prompt.length > 220
+                  ? coverImage.prompt.slice(0, 220) + "…"
+                  : coverImage.prompt}
+              </p>
+              <button
+                onClick={onDeleteCoverImage}
+                style={{
+                  background: "transparent", border: "1px solid var(--rose)", color: "var(--rose)",
+                  padding: "5px 10px", cursor: "pointer", fontSize: 10,
+                  fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.06em",
+                  display: "inline-flex", alignItems: "center", gap: 5,
+                }}
+              >
+                <Trash2 size={10} /> DELETE COVER
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Generator */}
+      <div style={{ background: "var(--bone-light)", border: "1px solid var(--border)", padding: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+          <label style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, letterSpacing: "0.1em", color: "var(--olive)", fontWeight: 600, textTransform: "uppercase" }}>
+            {coverImage ? "Replace cover — image prompt" : "Image prompt"}
+          </label>
+          <button
+            onClick={buildPromptFromBrief}
+            disabled={buildingPrompt || generating}
+            style={{
+              background: "transparent", border: "1px solid var(--border)",
+              color: buildingPrompt ? "var(--olive)" : "var(--ink-soft)",
+              padding: "3px 8px", cursor: buildingPrompt || generating ? "wait" : "pointer",
+              fontSize: 10, letterSpacing: "0.05em",
+              fontFamily: "'JetBrains Mono', monospace",
+              display: "inline-flex", alignItems: "center", gap: 5,
+            }}
+          >
+            {buildingPrompt ? <Loader2 size={10} className="spin-icon" /> : <Sparkles size={10} />}
+            {buildingPrompt ? "BUILDING…" : "BUILD PROMPT FROM BRIEF"}
+          </button>
+        </div>
+        <textarea
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder="Describe the cover. Or click 'Build Prompt from Brief' to have Claude write one for you."
+          rows={4}
+          disabled={generating}
+          style={{ width: "100%", background: "var(--paper)", border: "1px solid var(--border)", padding: "8px 10px", fontSize: 13, fontFamily: "'Newsreader', Georgia, serif", outline: "none", resize: "vertical", boxSizing: "border-box", marginBottom: 10 }}
+        />
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <select value={size} onChange={(e) => setSize(e.target.value)} disabled={generating} style={{ background: "var(--paper)", border: "1px solid var(--border)", padding: "6px 8px", fontSize: 11, fontFamily: "'JetBrains Mono', monospace" }}>
+            <option value="1536x1024">1536×1024 ▭ landscape (recommended)</option>
+            <option value="1024x1024">1024×1024 ◻ square</option>
+            <option value="1024x1536">1024×1536 ▯ portrait</option>
+          </select>
+          <select value={quality} onChange={(e) => setQuality(e.target.value)} disabled={generating} style={{ background: "var(--paper)", border: "1px solid var(--border)", padding: "6px 8px", fontSize: 11, fontFamily: "'JetBrains Mono', monospace" }}>
+            <option value="medium">Medium quality</option>
+            <option value="high">High quality · slow (recommended for cover)</option>
+            <option value="low">Low quality · fast</option>
+          </select>
+          <button
+            onClick={generate}
+            disabled={!prompt.trim() || generating}
+            style={{ marginLeft: "auto", background: prompt.trim() && !generating ? "var(--olive)" : "var(--border)", color: prompt.trim() && !generating ? "var(--bone)" : "var(--warm-gray)", border: "none", padding: "8px 16px", cursor: prompt.trim() && !generating ? "pointer" : "not-allowed", fontSize: 11, display: "flex", alignItems: "center", gap: 6, letterSpacing: "0.06em", textTransform: "uppercase" }}
+          >
+            {generating ? <Loader2 size={12} className="spin-icon" /> : <Sparkles size={12} />}
+            {generating ? "GENERATING…" : (coverImage ? "REPLACE COVER" : "GENERATE COVER")}
+          </button>
+        </div>
+        {error && (
+          <div style={{ marginTop: 10, color: "var(--rose)", fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }}>
+            ⚠ {error}
+          </div>
+        )}
+        {warning && !error && (
+          <div style={{ marginTop: 10, color: "var(--gold)", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", lineHeight: 1.5 }}>
+            ⚠ {warning}
+          </div>
+        )}
+        <div style={{ marginTop: 8, fontSize: 11, color: "var(--warm-gray)", fontStyle: "italic" }}>
+          High quality at 1536×1024 takes 60–120 seconds. The cover is shared across the team and inlined on the title slide every time you regenerate the Gamma deck.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 function ImageGenerator({ agent, brief, currentDraft, visuals, onSaveVisual, onDeleteVisual }) {
   const [prompt, setPrompt] = useState("");
@@ -922,6 +1160,9 @@ function ImageGenerator({ agent, brief, currentDraft, visuals, onSaveVisual, onD
 
 function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, workspace, visuals, onBack, onSendMessage, onSaveDraft, onSetWinner, onDeleteDraft, onRemoveImage, onSaveVisual, onDeleteVisual, onLoadDraft, onRunTournament, tournamentResult, isWaiting, refreshing, onRefresh }) {
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState([]); // [{ name, type, size, base64 }]
+  const [attachError, setAttachError] = useState(null);
+  const fileInputRef = useRef(null);
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [includeImage, setIncludeImage] = useState(false);
@@ -940,11 +1181,59 @@ function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, w
     if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
   }, [chatHistory.length]);
 
+  // File attachment limits — Vercel Hobby has 4.5MB body limit; base64 inflates ~33%.
+  // Cap per-file generously, then enforce total request budget.
+  const MAX_IMAGE_BYTES = 5 * 1024 * 1024;   // 5 MB per image
+  const MAX_PDF_BYTES = 10 * 1024 * 1024;    // 10 MB per PDF
+  const MAX_TOTAL_BASE64 = 4 * 1024 * 1024;  // ~3 MB raw — keeps request under Vercel limit
+
+  const handleFiles = async (files) => {
+    setAttachError(null);
+    const newAtts = [];
+    for (const file of Array.from(files)) {
+      const isImage = file.type.startsWith("image/");
+      const isPdf = file.type === "application/pdf";
+      if (!isImage && !isPdf) {
+        setAttachError(`Skipped ${file.name} — only images and PDFs are supported.`);
+        continue;
+      }
+      const limit = isPdf ? MAX_PDF_BYTES : MAX_IMAGE_BYTES;
+      if (file.size > limit) {
+        setAttachError(`Skipped ${file.name} — exceeds ${isPdf ? "10MB PDF" : "5MB image"} limit.`);
+        continue;
+      }
+      // Read as base64 (strip the "data:...;base64," prefix)
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(",")[1]);
+        reader.onerror = () => reject(new Error("Read failed"));
+        reader.readAsDataURL(file);
+      });
+      newAtts.push({ name: file.name, type: file.type, size: file.size, base64 });
+    }
+    // Enforce total budget across already-attached + new
+    const allAtts = [...attachments, ...newAtts];
+    const totalBase64 = allAtts.reduce((sum, a) => sum + a.base64.length, 0);
+    if (totalBase64 > MAX_TOTAL_BASE64) {
+      setAttachError(`Total attached data exceeds the request limit (~3MB raw). Drop some files.`);
+      return;
+    }
+    setAttachments(allAtts);
+  };
+
+  const removeAttachment = (idx) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== idx));
+    setAttachError(null);
+  };
+
   const send = async () => {
-    if (!input.trim() || isWaiting) return;
+    if ((!input.trim() && attachments.length === 0) || isWaiting) return;
     const msg = input.trim();
+    const atts = attachments;
     setInput("");
-    await onSendMessage(msg);
+    setAttachments([]);
+    setAttachError(null);
+    await onSendMessage(msg, atts);
   };
 
   const handleSave = async () => {
@@ -1093,6 +1382,7 @@ function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, w
                 content={m.content}
                 author={m.author || user.handle}
                 timestamp={m.timestamp}
+                attachments={m.attachments}
                 isLatest={m.role === "assistant" && i === chatHistory.length - 1}
               />
             ))
@@ -1104,23 +1394,102 @@ function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, w
           )}
         </div>
 
-        <div style={{ borderTop: "1px solid var(--border)", padding: 14, display: "flex", gap: 10, background: "var(--bone-light)" }}>
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-            placeholder={chatHistory.length === 0 ? "e.g. Generate first draft" : "e.g. Make the TTR more emotional. Or: tighten the values section."}
-            disabled={isWaiting}
-            rows={2}
-            style={{ flex: 1, background: "var(--paper)", border: "1px solid var(--border)", padding: "8px 12px", fontSize: 14, color: "var(--ink)", outline: "none", resize: "none", fontFamily: "'Newsreader', Georgia, serif" }}
+        <div style={{ borderTop: "1px solid var(--border)", padding: 14, background: "var(--bone-light)" }}>
+          {/* Hidden file input — triggered by paperclip button */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif,application/pdf"
+            multiple
+            style={{ display: "none" }}
+            onChange={(e) => {
+              if (e.target.files && e.target.files.length > 0) {
+                handleFiles(e.target.files);
+              }
+              e.target.value = ""; // allow re-selecting same file
+            }}
           />
-          <button
-            onClick={send}
-            disabled={!input.trim() || isWaiting}
-            style={{ background: input.trim() && !isWaiting ? "var(--ink)" : "var(--border)", color: input.trim() && !isWaiting ? "var(--bone)" : "var(--warm-gray)", border: "none", padding: "0 18px", cursor: input.trim() && !isWaiting ? "pointer" : "not-allowed", fontSize: 12, display: "flex", alignItems: "center", gap: 8, letterSpacing: "0.06em", textTransform: "uppercase" }}
-          >
-            <Send size={13} /> SEND
-          </button>
+
+          {/* Attachment chips */}
+          {attachments.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+              {attachments.map((att, i) => {
+                const isImg = att.type.startsWith("image/");
+                const sizeKB = Math.round(att.size / 1024);
+                return (
+                  <div
+                    key={i}
+                    style={{
+                      display: "inline-flex", alignItems: "center", gap: 6,
+                      background: "var(--paper)", padding: "4px 4px 4px 8px",
+                      border: "1px solid var(--border)", fontSize: 11,
+                      fontFamily: "'JetBrains Mono', monospace",
+                      maxWidth: 280,
+                    }}
+                  >
+                    {isImg ? <ImageIcon size={11} color="var(--olive)" /> : <FileText size={11} color="var(--clay)" />}
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {att.name}
+                    </span>
+                    <span style={{ color: "var(--warm-gray)", fontSize: 10 }}>
+                      {sizeKB < 1024 ? `${sizeKB}KB` : `${(sizeKB / 1024).toFixed(1)}MB`}
+                    </span>
+                    <button
+                      onClick={() => removeAttachment(i)}
+                      disabled={isWaiting}
+                      title="Remove attachment"
+                      style={{
+                        background: "transparent", border: "none", cursor: "pointer",
+                        color: "var(--warm-gray)", padding: "2px 4px", marginLeft: 2,
+                        display: "inline-flex", alignItems: "center",
+                      }}
+                    >
+                      <X size={11} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {attachError && (
+            <div style={{ color: "var(--rose)", fontSize: 11, fontFamily: "'JetBrains Mono', monospace", marginBottom: 8 }}>
+              ⚠ {attachError}
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 10 }}>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isWaiting}
+              title="Attach images or PDFs (max 5MB image, 10MB PDF, ~3MB total)"
+              style={{
+                background: "var(--paper)", border: "1px solid var(--border)",
+                color: "var(--ink-soft)", padding: "0 12px",
+                cursor: isWaiting ? "not-allowed" : "pointer",
+                display: "flex", alignItems: "center", gap: 4,
+                flexShrink: 0,
+              }}
+            >
+              <Paperclip size={14} />
+            </button>
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+              placeholder={chatHistory.length === 0 ? "e.g. Generate first draft" : "e.g. Make the TTR more emotional. Or: tighten the values section."}
+              disabled={isWaiting}
+              rows={2}
+              style={{ flex: 1, background: "var(--paper)", border: "1px solid var(--border)", padding: "8px 12px", fontSize: 14, color: "var(--ink)", outline: "none", resize: "none", fontFamily: "'Newsreader', Georgia, serif" }}
+            />
+            <button
+              onClick={send}
+              disabled={(!input.trim() && attachments.length === 0) || isWaiting}
+              style={{ background: (input.trim() || attachments.length > 0) && !isWaiting ? "var(--ink)" : "var(--border)", color: (input.trim() || attachments.length > 0) && !isWaiting ? "var(--bone)" : "var(--warm-gray)", border: "none", padding: "0 18px", cursor: (input.trim() || attachments.length > 0) && !isWaiting ? "pointer" : "not-allowed", fontSize: 12, display: "flex", alignItems: "center", gap: 8, letterSpacing: "0.06em", textTransform: "uppercase" }}
+            >
+              <Send size={13} /> SEND
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1635,6 +2004,14 @@ function ExportView({ brief, draftsByAgent, winners }) {
         )}
       </div>
 
+      {/* === Cover Image — title slide hero === */}
+      <CoverImageGenerator
+        brief={brief}
+        coverImage={coverImage}
+        onSaveCoverImage={saveCoverImage}
+        onDeleteCoverImage={deleteCoverImage}
+      />
+
       {/* === Generate via Gamma === */}
       <div style={{ background: "var(--paper)", border: "1px solid var(--ink)", borderLeft: "4px solid var(--gold)", padding: "24px 28px", marginBottom: 28 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
@@ -1857,6 +2234,7 @@ export default function Page() {
   const [winners, setWinners] = useState({});
   const [tournaments, setTournaments] = useState({});
   const [visualsByAgent, setVisualsByAgent] = useState({});
+  const [coverImage, setCoverImage] = useState(null);
   const [workspaces, setWorkspaces] = useState({});
 
   const [refreshing, setRefreshing] = useState(false);
@@ -1895,6 +2273,7 @@ export default function Page() {
       setWinners(data.winners || {});
       setTournaments(data.tournaments || {});
       setVisualsByAgent(data.visualsByAgent || {});
+      setCoverImage(data.coverImage || null);
       setNeedsPassword(false);
       setPasswordError("");
     } catch (e) {
@@ -1966,12 +2345,25 @@ export default function Page() {
     return locks;
   };
 
-  const sendAgentMessage = async (agentId, userMessage) => {
+  const sendAgentMessage = async (agentId, userMessage, attachments = []) => {
     const agent = AGENTS.find((a) => a.id === agentId);
     const ws = workspaces[agentId] || { chatHistory: [] };
     const upstreamLocks = getUpstreamLocks(agentId);
 
-    const newUserMsg = { role: "user", content: userMessage, author: user.handle, timestamp: Date.now() };
+    // Store attachment metadata in the chat log (not the base64 — too big for localStorage)
+    const attachmentsMeta = (attachments || []).map((a) => ({
+      name: a.name,
+      type: a.type,
+      size: a.size,
+    }));
+
+    const newUserMsg = {
+      role: "user",
+      content: userMessage,
+      author: user.handle,
+      timestamp: Date.now(),
+      ...(attachmentsMeta.length > 0 ? { attachments: attachmentsMeta } : {}),
+    };
     const newHistory = [...ws.chatHistory, newUserMsg];
 
     setWorkspaces((prev) => ({ ...prev, [agentId]: { ...ws, chatHistory: newHistory } }));
@@ -1984,6 +2376,8 @@ export default function Page() {
         upstreamLocks,
         chatHistory: ws.chatHistory.map((m) => ({ role: m.role, content: m.content })),
         newUserMessage: userMessage,
+        // Full base64 attachments go to Claude for this turn only
+        attachments: attachments || [],
       });
       const newAssistantMsg = { role: "assistant", content: text, timestamp: Date.now() };
       setWorkspaces((prev) => ({
@@ -2109,6 +2503,35 @@ export default function Page() {
     }
   };
 
+  const saveCoverImage = async ({ prompt, imageDataUrl, imageUrl, size, quality }) => {
+    const record = {
+      prompt,
+      imageDataUrl,
+      imageUrl: imageUrl || null,
+      size,
+      quality,
+      author: user.handle,
+      createdAt: Date.now(),
+    };
+    try {
+      await callStorage("saveCoverImage", { coverImage: record });
+      setCoverImage(record);
+      return record;
+    } catch (e) {
+      throw new Error("Failed to save cover image: " + e.message);
+    }
+  };
+
+  const deleteCoverImage = async () => {
+    if (!window.confirm("Delete the cover image? This affects everyone.")) return;
+    try {
+      await callStorage("deleteCoverImage");
+      setCoverImage(null);
+    } catch (e) {
+      alert("Failed to delete cover image: " + e.message);
+    }
+  };
+
   const setDraftAsWinner = async (agentId, draftId) => {
     try {
       await callStorage("setWinner", { agentId, draftId });
@@ -2221,7 +2644,7 @@ export default function Page() {
               workspace={workspaces[openAgentId]}
               visuals={visualsByAgent[openAgentId] || []}
               onBack={() => setOpenAgentId(null)}
-              onSendMessage={(msg) => sendAgentMessage(openAgentId, msg)}
+              onSendMessage={(msg, atts) => sendAgentMessage(openAgentId, msg, atts)}
               onSaveDraft={(name, content, imgUrl, imgDesc, imgPublicUrl) => saveDraft(openAgentId, name, content, imgUrl, imgDesc, imgPublicUrl)}
               onSetWinner={(draftId) => setDraftAsWinner(openAgentId, draftId)}
               onDeleteDraft={(draftId) => deleteDraft(openAgentId, draftId)}

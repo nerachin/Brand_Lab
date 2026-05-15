@@ -97,7 +97,14 @@ export async function POST(request) {
           briefMeta = parsed.meta || {};
         }
 
-        return Response.json({ brief, briefMeta, draftsByAgent, winners, tournaments, visualsByAgent });
+        // Cover image (single slot, not per-agent)
+        const coverImageRaw = await redis.get("cover_image");
+        let coverImage = null;
+        if (coverImageRaw) {
+          coverImage = typeof coverImageRaw === "string" ? JSON.parse(coverImageRaw) : coverImageRaw;
+        }
+
+        return Response.json({ brief, briefMeta, draftsByAgent, winners, tournaments, visualsByAgent, coverImage });
       }
 
       case "saveBrief": {
@@ -176,10 +183,25 @@ export async function POST(request) {
         return Response.json({ ok: true });
       }
 
+      case "saveCoverImage": {
+        const { coverImage } = body;
+        if (!coverImage) {
+          return Response.json({ error: "coverImage required" }, { status: 400 });
+        }
+        await redis.set("cover_image", JSON.stringify(coverImage));
+        return Response.json({ ok: true });
+      }
+
+      case "deleteCoverImage": {
+        await redis.del("cover_image");
+        return Response.json({ ok: true });
+      }
+
       case "resetAll": {
         // Nuke the whole shared state. Confirmed client-side.
         const all = [
           "brief",
+          "cover_image",
           ...(await redis.keys("draft:*")),
           ...(await redis.keys("winner:*")),
           ...(await redis.keys("tournament:*")),

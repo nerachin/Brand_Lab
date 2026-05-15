@@ -30,15 +30,47 @@ export async function POST(request) {
     let messages;
 
     if (mode === "agent_chat") {
-      const { agentId, brief, upstreamLocks, chatHistory, newUserMessage } = body;
+      const { agentId, brief, upstreamLocks, chatHistory, newUserMessage, attachments } = body;
       const agent = AGENTS.find((a) => a.id === agentId);
       if (!agent) {
         return Response.json({ error: `Unknown agent ${agentId}` }, { status: 400 });
       }
       system = buildSystemPromptForAgent(agent, brief, upstreamLocks);
+
+      // Build the new user turn — text + any attached images/PDFs
+      let newUserContent;
+      if (attachments && Array.isArray(attachments) && attachments.length > 0) {
+        newUserContent = [];
+        // Anthropic best practice: attachments BEFORE the text instruction
+        for (const att of attachments) {
+          if (!att?.base64 || !att?.type) continue;
+          if (att.type.startsWith("image/")) {
+            newUserContent.push({
+              type: "image",
+              source: { type: "base64", media_type: att.type, data: att.base64 },
+            });
+          } else if (att.type === "application/pdf") {
+            newUserContent.push({
+              type: "document",
+              source: { type: "base64", media_type: "application/pdf", data: att.base64 },
+            });
+          }
+        }
+        // If text exists, add it after the attachments
+        if (newUserMessage && newUserMessage.trim()) {
+          newUserContent.push({ type: "text", text: newUserMessage });
+        } else {
+          // Attachments only — give Claude a sensible default instruction
+          newUserContent.push({ type: "text", text: "Please review the attached material and incorporate it into your next draft." });
+        }
+      } else {
+        // No attachments — keep the existing string-content shape
+        newUserContent = newUserMessage;
+      }
+
       messages = [
         ...(chatHistory || []).map((m) => ({ role: m.role, content: m.content })),
-        { role: "user", content: newUserMessage },
+        { role: "user", content: newUserContent },
       ];
     } else if (mode === "tournament") {
       const { promptText } = body;

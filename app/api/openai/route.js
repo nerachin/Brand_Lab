@@ -69,15 +69,33 @@ export async function POST(request) {
 
     const client = getClient();
 
-    const result = await client.chat.completions.create({
+    // Parameter compatibility varies by model family:
+    // - GPT-5 series + o-series: use `max_completion_tokens` (NOT max_tokens)
+    // - o-series (o1, o3, o4) reasoning models: do NOT accept temperature
+    // - GPT-4 series and earlier: use `max_tokens`, accept temperature
+    const isGpt5OrNewer = /^(gpt-5|o\d)/i.test(model);
+    const isReasoningOnly = /^o\d/i.test(model);
+
+    const requestParams = {
       model,
       messages: [
         { role: "system", content: system },
         { role: "user", content: userText },
       ],
-      temperature,
-      max_tokens: maxTokens,
-    });
+    };
+
+    if (isGpt5OrNewer) {
+      requestParams.max_completion_tokens = maxTokens;
+    } else {
+      requestParams.max_tokens = maxTokens;
+    }
+
+    // Reasoning-only models (o1, o3, o4) don't accept temperature
+    if (!isReasoningOnly) {
+      requestParams.temperature = temperature;
+    }
+
+    const result = await client.chat.completions.create(requestParams);
 
     const text = result.choices?.[0]?.message?.content?.trim() || "";
     if (!text) {
