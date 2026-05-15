@@ -279,6 +279,95 @@ function OnboardingModal({ onSubmit }) {
   );
 }
 
+function LoadDiagnosticsBanner({ diagnostics, onRefresh }) {
+  const [collapsed, setCollapsed] = useState(true);
+  const { loadErrors = [], diagnostics: stats } = diagnostics || {};
+  const hasErrors = loadErrors.length > 0;
+  const keyCounts = stats?.keyCounts;
+  const visualsStats = stats?.visualsStats;
+  // Only show prominently if there are errors or if a teammate might want to verify counts
+  const totalItems = keyCounts ? (keyCounts.drafts + keyCounts.visuals + keyCounts.coverImage + keyCounts.brandingImage) : 0;
+  if (!hasErrors && totalItems === 0) return null;
+
+  return (
+    <div style={{
+      maxWidth: 1100,
+      margin: "0 auto",
+      padding: "8px 28px 0",
+    }}>
+      <div style={{
+        background: hasErrors ? "rgba(176, 70, 50, 0.06)" : "var(--bone-light)",
+        border: hasErrors ? "1px solid var(--rose)" : "1px solid var(--border)",
+        padding: "10px 14px",
+        fontFamily: "'JetBrains Mono', monospace",
+        fontSize: 11,
+        color: hasErrors ? "var(--rose)" : "var(--ink-soft)",
+        letterSpacing: "0.04em",
+      }}>
+        <div
+          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", gap: 12 }}
+          onClick={() => setCollapsed((c) => !c)}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1 }}>
+            {hasErrors ? <AlertCircle size={13} /> : <Check size={13} color="var(--olive)" />}
+            <span>
+              {hasErrors
+                ? `⚠ LOAD ISSUES: ${loadErrors.length} section(s) failed`
+                : `LOADED FROM REDIS · ${keyCounts?.drafts || 0} drafts · ${keyCounts?.visuals || 0} visuals · ${keyCounts?.winners || 0} winners · ${keyCounts?.coverImage || 0} cover · ${keyCounts?.brandingImage || 0} brand sheet`}
+            </span>
+          </div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <button
+              onClick={(e) => { e.stopPropagation(); onRefresh(); }}
+              style={{
+                background: "transparent",
+                border: "1px solid currentColor",
+                color: "inherit",
+                padding: "3px 8px",
+                cursor: "pointer",
+                fontSize: 10,
+                letterSpacing: "0.05em",
+                fontFamily: "'JetBrains Mono', monospace",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+              }}
+            >
+              <RefreshCw size={10} /> REFRESH
+            </button>
+            {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+          </div>
+        </div>
+
+        {!collapsed && (
+          <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+            {visualsStats && visualsStats.total > 0 && (
+              <div style={{ marginBottom: 6, color: "var(--ink-soft)" }}>
+                VISUALS: {visualsStats.total} total · {visualsStats.withUrl} via Blob URL · {visualsStats.withBase64Only} base64-only · {visualsStats.failed} failed
+                {visualsStats.withBase64Only > 0 && (
+                  <div style={{ color: "var(--gold)", marginTop: 4 }}>
+                    ⚠ {visualsStats.withBase64Only} visual(s) have no Blob URL — they're using base64 fallback which bloats storage. Run COMPACT STORAGE on Tab 3 to clean these up only AFTER confirming Vercel Blob is configured as PUBLIC.
+                  </div>
+                )}
+              </div>
+            )}
+            {hasErrors && (
+              <div style={{ marginTop: 4 }}>
+                <div style={{ marginBottom: 4 }}>FAILED SECTIONS:</div>
+                {loadErrors.map((e, i) => (
+                  <div key={i} style={{ marginLeft: 12, marginBottom: 2 }}>
+                    · <strong>{e.section}</strong>: {e.message}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TabNav({ active, onChange, briefReady, anyDrafts }) {
   const tabs = [
     { id: "brief", label: "01 / Brief", icon: FileText, disabled: false },
@@ -1201,7 +1290,7 @@ function ImageGenerator({ agent, brief, currentDraft, visuals, brandingImage, on
   const [localImages, setLocalImages] = useState([]); // fallback for when Blob isn't configured
   const [error, setError] = useState(null);
   const [warning, setWarning] = useState(null);
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
 
   const seedPrompt = () => {
     if (agent.id === "A6") {
@@ -2689,6 +2778,7 @@ export default function Page() {
   const [coverImage, setCoverImage] = useState(null);
   const [brandingImage, setBrandingImage] = useState(null);
   const [workspaces, setWorkspaces] = useState({});
+  const [loadDiagnostics, setLoadDiagnostics] = useState(null); // last loadAll's diagnostics + loadErrors
 
   const [refreshing, setRefreshing] = useState(false);
   const [isWaiting, setIsWaiting] = useState(false);
@@ -2728,6 +2818,11 @@ export default function Page() {
       setVisualsByAgent(data.visualsByAgent || {});
       setCoverImage(data.coverImage || null);
       setBrandingImage(data.brandingImage || null);
+      setLoadDiagnostics({
+        diagnostics: data.diagnostics || null,
+        loadErrors: data.loadErrors || [],
+        timestamp: Date.now(),
+      });
       setNeedsPassword(false);
       setPasswordError("");
       // Surface per-section load failures — these happen when one Redis section
@@ -3129,6 +3224,10 @@ export default function Page() {
       <Header user={user} onSignOut={handleSignOut} />
       {!openAgentId && (
         <TabNav active={activeTab} onChange={setActiveTab} briefReady={briefReady} anyDrafts={anyDrafts} />
+      )}
+
+      {loadDiagnostics && !openAgentId && (
+        <LoadDiagnosticsBanner diagnostics={loadDiagnostics} onRefresh={refreshSharedState} />
       )}
 
       {openAgentId ? (

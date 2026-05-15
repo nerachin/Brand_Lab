@@ -215,10 +215,10 @@ export async function POST(request) {
 
     // Parameter compatibility varies by model family:
     // - GPT-5 series + o-series: use `max_completion_tokens` (NOT max_tokens)
-    // - o-series (o1, o3, o4) reasoning models: do NOT accept temperature
+    // - GPT-5 series + o-series: temperature is locked to default (1) — sending
+    //   any custom value (including 0.6, 0.7) returns a 400 error. Drop the param.
     // - GPT-4 series and earlier: use `max_tokens`, accept temperature
     const isGpt5OrNewer = /^(gpt-5|o\d)/i.test(model);
-    const isReasoningOnly = /^o\d/i.test(model);
 
     const requestParams = {
       model,
@@ -227,12 +227,9 @@ export async function POST(request) {
 
     if (isGpt5OrNewer) {
       requestParams.max_completion_tokens = maxTokens;
+      // No temperature param at all — GPT-5+ rejects non-default values
     } else {
       requestParams.max_tokens = maxTokens;
-    }
-
-    // Reasoning-only models (o1, o3, o4) don't accept temperature
-    if (!isReasoningOnly) {
       requestParams.temperature = temperature;
     }
 

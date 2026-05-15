@@ -54,9 +54,18 @@ export async function POST(request) {
         try {
           const draftKeys = await redis.keys("draft:*");
           if (draftKeys.length > 0) {
-            const draftValues = await redis.mget(...draftKeys);
+            // BATCHED MGET: fetch in chunks of 5 so accumulated payload size never
+            // exceeds Upstash response limits. Each draft can be up to ~5KB after
+            // base64 stripping, so 5 keys = ~25KB per call. Safe.
+            const BATCH = 5;
+            const allValues = [];
+            for (let i = 0; i < draftKeys.length; i += BATCH) {
+              const chunk = draftKeys.slice(i, i + BATCH);
+              const values = await redis.mget(...chunk);
+              for (const v of values) allValues.push(v);
+            }
             for (let i = 0; i < draftKeys.length; i++) {
-              const val = draftValues[i];
+              const val = allValues[i];
               if (!val) continue;
               try {
                 const draft = typeof val === "string" ? JSON.parse(val) : val;
@@ -77,9 +86,13 @@ export async function POST(request) {
         try {
           const winnerKeys = await redis.keys("winner:*");
           if (winnerKeys.length > 0) {
-            const winnerValues = await redis.mget(...winnerKeys);
-            for (let i = 0; i < winnerKeys.length; i++) {
-              winners[winnerKeys[i].replace("winner:", "")] = winnerValues[i];
+            const BATCH = 10;
+            for (let i = 0; i < winnerKeys.length; i += BATCH) {
+              const chunk = winnerKeys.slice(i, i + BATCH);
+              const values = await redis.mget(...chunk);
+              for (let j = 0; j < chunk.length; j++) {
+                winners[chunk[j].replace("winner:", "")] = values[j];
+              }
             }
           }
         } catch (e) {
@@ -91,14 +104,18 @@ export async function POST(request) {
         try {
           const tournamentKeys = await redis.keys("tournament:*");
           if (tournamentKeys.length > 0) {
-            const tValues = await redis.mget(...tournamentKeys);
-            for (let i = 0; i < tournamentKeys.length; i++) {
-              const agentId = tournamentKeys[i].replace("tournament:", "");
-              const val = tValues[i];
-              if (val) {
-                try {
-                  tournaments[agentId] = typeof val === "string" ? JSON.parse(val) : val;
-                } catch {}
+            const BATCH = 5;
+            for (let i = 0; i < tournamentKeys.length; i += BATCH) {
+              const chunk = tournamentKeys.slice(i, i + BATCH);
+              const tValues = await redis.mget(...chunk);
+              for (let j = 0; j < chunk.length; j++) {
+                const agentId = chunk[j].replace("tournament:", "");
+                const val = tValues[j];
+                if (val) {
+                  try {
+                    tournaments[agentId] = typeof val === "string" ? JSON.parse(val) : val;
+                  } catch {}
+                }
               }
             }
           }
@@ -106,20 +123,28 @@ export async function POST(request) {
           loadErrors.push({ section: "tournaments", message: e?.message || String(e) });
         }
 
-        // ---- Visuals (most likely to be oversized — wrap defensively) ----
+        // ---- Visuals (most likely to be oversized — batched and most defensive) ----
         const visualsByAgent = {};
+        let visualsStats = { total: 0, withUrl: 0, withBase64Only: 0, failed: 0 };
         try {
           const visualKeys = await redis.keys("visual:*");
           if (visualKeys.length > 0) {
-            const visualValues = await redis.mget(...visualKeys);
-            for (let i = 0; i < visualKeys.length; i++) {
-              const val = visualValues[i];
-              if (!val) continue;
+            // Fetch one record at a time for visuals — they may have base64 fallback
+            // (~1MB each) so batched mget can still exceed 10MB. Slower but reliable.
+            for (const key of visualKeys) {
               try {
+                const val = await redis.get(key);
+                if (!val) continue;
                 const visual = typeof val === "string" ? JSON.parse(val) : val;
                 if (!visualsByAgent[visual.agentId]) visualsByAgent[visual.agentId] = [];
                 visualsByAgent[visual.agentId].push(visual);
-              } catch {}
+                visualsStats.total++;
+                if (visual.imageUrl) visualsStats.withUrl++;
+                else if (visual.imageDataUrl) visualsStats.withBase64Only++;
+              } catch (perVisualErr) {
+                visualsStats.failed++;
+                loadErrors.push({ section: `visual:${key}`, message: perVisualErr?.message || String(perVisualErr) });
+              }
             }
             for (const aId of Object.keys(visualsByAgent)) {
               visualsByAgent[aId].sort((a, b) => a.createdAt - b.createdAt);
@@ -154,6 +179,17 @@ export async function POST(request) {
         return Response.json({
           brief, briefMeta, draftsByAgent, winners, tournaments, visualsByAgent, coverImage, brandingImage,
           loadErrors, // [] when everything succeeded
+          diagnostics: {
+            visualsStats,
+            keyCounts: {
+              drafts: Object.values(draftsByAgent).flat().length,
+              visuals: Object.values(visualsByAgent).flat().length,
+              winners: Object.keys(winners).length,
+              tournaments: Object.keys(tournaments).length,
+              coverImage: coverImage ? 1 : 0,
+              brandingImage: brandingImage ? 1 : 0,
+            },
+          },
         });
       }
 

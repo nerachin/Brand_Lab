@@ -195,8 +195,9 @@ async function resolveImageForAgent({ agentId, winningDraft, agentVisuals, redis
           winningDraft.imageDataUrl,
           `${agentId}_${(winningDraft.name || "draft").slice(0, 20)}`
         );
-        // Persist fresh URL back to Redis so future runs don't re-upload
-        const updated = { ...winningDraft, imagePublicUrl: fresh };
+        // STRIP base64 when persisting back — we now have a public URL, the base64
+        // is no longer needed and just bloats Redis (preventing future mgets).
+        const updated = { ...winningDraft, imagePublicUrl: fresh, imageDataUrl: null };
         await redis.set(`draft:${winningDraft.agentId}:${winningDraft.id}`, JSON.stringify(updated));
         return { ...result, url: fresh, source: "draft" };
       } catch (e) {
@@ -224,8 +225,8 @@ async function resolveImageForAgent({ agentId, winningDraft, agentVisuals, redis
           latest.imageDataUrl,
           `${agentId}_gallery`
         );
-        // Persist fresh URL back
-        const updated = { ...latest, imageUrl: fresh };
+        // STRIP base64 here too — public URL is enough going forward
+        const updated = { ...latest, imageUrl: fresh, imageDataUrl: null };
         await redis.set(`visual:${latest.agentId}:${latest.id}`, JSON.stringify(updated));
         return { ...result, url: fresh, source: "gallery" };
       } catch (e) {
@@ -271,13 +272,16 @@ export async function POST(request) {
 
       const draftsByAgent = {};
       if (draftKeys.length > 0) {
-        const vals = await redis.mget(...draftKeys);
-        for (let i = 0; i < draftKeys.length; i++) {
-          const v = vals[i];
-          if (!v) continue;
-          const d = typeof v === "string" ? JSON.parse(v) : v;
-          if (!draftsByAgent[d.agentId]) draftsByAgent[d.agentId] = [];
-          draftsByAgent[d.agentId].push(d);
+        // Per-key load — drafts can carry base64 image data, mget could blow past
+        // Upstash's request/response size limits.
+        for (const key of draftKeys) {
+          try {
+            const v = await redis.get(key);
+            if (!v) continue;
+            const d = typeof v === "string" ? JSON.parse(v) : v;
+            if (!draftsByAgent[d.agentId]) draftsByAgent[d.agentId] = [];
+            draftsByAgent[d.agentId].push(d);
+          } catch {} // skip individual bad records
         }
         for (const a of Object.keys(draftsByAgent)) {
           draftsByAgent[a].sort((x, y) => x.createdAt - y.createdAt);
@@ -286,6 +290,7 @@ export async function POST(request) {
 
       const winners = {};
       if (winnerKeys.length > 0) {
+        // Winners are tiny strings (draft IDs) — mget is fine here
         const vals = await redis.mget(...winnerKeys);
         for (let i = 0; i < winnerKeys.length; i++) {
           winners[winnerKeys[i].replace("winner:", "")] = vals[i];
@@ -294,13 +299,15 @@ export async function POST(request) {
 
       const visualsByAgent = {};
       if (visualKeys.length > 0) {
-        const vals = await redis.mget(...visualKeys);
-        for (let i = 0; i < visualKeys.length; i++) {
-          const v = vals[i];
-          if (!v) continue;
-          const visual = typeof v === "string" ? JSON.parse(v) : v;
-          if (!visualsByAgent[visual.agentId]) visualsByAgent[visual.agentId] = [];
-          visualsByAgent[visual.agentId].push(visual);
+        // Per-key load — visuals can be the heaviest records, with up to ~5MB base64
+        for (const key of visualKeys) {
+          try {
+            const v = await redis.get(key);
+            if (!v) continue;
+            const visual = typeof v === "string" ? JSON.parse(v) : v;
+            if (!visualsByAgent[visual.agentId]) visualsByAgent[visual.agentId] = [];
+            visualsByAgent[visual.agentId].push(visual);
+          } catch {}
         }
       }
 
