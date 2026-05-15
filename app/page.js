@@ -1935,6 +1935,41 @@ function ExportView({ brief, draftsByAgent, winners, coverImage, saveCoverImage,
   const [gammaResult, setGammaResult] = useState(null); // { gammaUrl, exportUrl, credits }
   const [gammaProgress, setGammaProgress] = useState({ attempt: 0, elapsed: 0 });
 
+  // Storage diagnostics state (lives here — was incorrectly defined in App, causing
+  // ReferenceError on Tab 3 mount)
+  const [compactStatus, setCompactStatus] = useState(null); // null | "running" | string
+  const [healthResult, setHealthResult] = useState(null); // null | "running" | object
+
+  const compactStorage = async () => {
+    if (!window.confirm(
+      "Compact storage will strip the base64 image data from any saved drafts, visuals, and covers " +
+      "that already have public URLs. This saves Upstash bandwidth dramatically. Safe to run — your " +
+      "images stay accessible via their public URLs. Continue?"
+    )) return;
+    setCompactStatus("running");
+    try {
+      const result = await callStorage("compactStorage");
+      setCompactStatus(
+        `Compacted: ${result.draftsCompacted} drafts, ${result.visualsCompacted} visuals` +
+        (result.coverCompacted ? ", 1 cover" : "") +
+        (result.brandingCompacted ? ", 1 brand sheet" : "") +
+        `. Freed ${result.mbFreed} MB. Refresh to load the lighter records.`
+      );
+    } catch (e) {
+      setCompactStatus("Failed: " + e.message);
+    }
+  };
+
+  const runHealthCheck = async () => {
+    setHealthResult("running");
+    try {
+      const result = await callStorage("healthCheck");
+      setHealthResult(result);
+    } catch (e) {
+      setHealthResult({ error: e.message });
+    }
+  };
+
   const buildDeck = () => {
     let md = `# Brand Experience Deck\n\n## Brief\n`;
     md += `- **Product:** ${brief.productIdea || "—"}\n`;
@@ -2411,7 +2446,8 @@ function ExportView({ brief, draftsByAgent, winners, coverImage, saveCoverImage,
                   &nbsp;&nbsp;Drafts: {healthResult.keyCounts.drafts}<br />
                   &nbsp;&nbsp;Winners: {healthResult.keyCounts.winners}<br />
                   &nbsp;&nbsp;Visuals: {healthResult.keyCounts.visuals}<br />
-                  &nbsp;&nbsp;Cover image: {healthResult.coverImage.present ? "✓ yes" : "—"}
+                  &nbsp;&nbsp;Cover image: {healthResult.coverImage?.present ? "✓ yes" : "—"}<br />
+                  &nbsp;&nbsp;Brand sheet: {healthResult.brandingImage?.present ? "✓ yes" : "—"}
                 </div>
               </>
             )}
@@ -2994,37 +3030,6 @@ export default function Page() {
       setBrandingImage(null);
     } catch (e) {
       alert("Failed to delete brand identity sheet: " + e.message);
-    }
-  };
-
-  const [compactStatus, setCompactStatus] = useState(null); // null | "running" | string
-  const compactStorage = async () => {
-    if (!window.confirm(
-      "Compact storage will strip the base64 image data from any saved drafts, visuals, and covers " +
-      "that already have public URLs. This saves Upstash bandwidth dramatically. Safe to run — your " +
-      "images stay accessible via their public URLs. Continue?"
-    )) return;
-    setCompactStatus("running");
-    try {
-      const result = await callStorage("compactStorage");
-      setCompactStatus(
-        `Compacted: ${result.draftsCompacted} drafts, ${result.visualsCompacted} visuals` +
-        (result.coverCompacted ? ", 1 cover" : "") +
-        `. Freed ${result.mbFreed} MB. Refresh to load the lighter records.`
-      );
-    } catch (e) {
-      setCompactStatus("Failed: " + e.message);
-    }
-  };
-
-  const [healthResult, setHealthResult] = useState(null); // null | "running" | object
-  const runHealthCheck = async () => {
-    setHealthResult("running");
-    try {
-      const result = await callStorage("healthCheck");
-      setHealthResult(result);
-    } catch (e) {
-      setHealthResult({ error: e.message });
     }
   };
 
