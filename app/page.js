@@ -741,7 +741,7 @@ function DraftListItem({ draft, isWinner, onLoad, onSetWinner, onDelete, onRemov
  * Single-slot persisted image: generating a new one replaces the existing.
  * Uses the same /api/image + Blob hosting + prompt-builder flow as per-section visuals.
  */
-function CoverImageGenerator({ brief, coverImage, onSaveCoverImage, onDeleteCoverImage }) {
+function CoverImageGenerator({ brief, coverImage, brandingImage, onSaveCoverImage, onDeleteCoverImage }) {
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState("1536x1024"); // landscape default — best for title slides
   const [quality, setQuality] = useState("high");
@@ -759,7 +759,23 @@ function CoverImageGenerator({ brief, coverImage, onSaveCoverImage, onDeleteCove
     setError(null);
     setWarning(null);
     try {
-      // Use a synthetic "COVER" agent context so the prompt builder uses the cover anchor
+      // Use a synthetic "COVER" agent context so the prompt builder uses the cover anchor.
+      // If a brand identity sheet exists, anchor the cover to its visual language (palette,
+      // mood, register) so the deck reads as one coherent brand world.
+      const brandAnchor = brandingImage?.prompt
+        ? [
+            "",
+            "## BRAND VISUAL IDENTITY (anchor — every generated image must share this visual language)",
+            "The team established this brand identity sheet on Tab 1. Use its palette, mood, typography",
+            "register, and material/finish cues as the visual anchor for this cover image — palette",
+            "must match, lighting/mood must feel consistent. DO NOT replicate the brand-sheet layout",
+            "(no swatches, no logo grids, no mockup montages); only inherit its visual register.",
+            "",
+            "Brand identity sheet prompt was:",
+            brandingImage.prompt.length > 1200 ? brandingImage.prompt.slice(0, 1200) + "…" : brandingImage.prompt,
+          ].join("\n")
+        : "";
+
       const promptText = [
         "## BRAND BRIEF",
         `- Product idea: ${brief.productIdea || "[unspecified]"}`,
@@ -768,6 +784,7 @@ function CoverImageGenerator({ brief, coverImage, onSaveCoverImage, onDeleteCove
         `- Disruption vector: ${brief.disruptionVector || "[unspecified]"}`,
         `- Geography: ${brief.geography || "[unspecified]"}`,
         brief.founderStory ? `- Founder story: ${brief.founderStory}` : "",
+        brandAnchor,
         "",
         "## AGENT / SLIDE TYPE",
         "COVER — hero image for the deck title slide",
@@ -879,6 +896,11 @@ function CoverImageGenerator({ brief, coverImage, onSaveCoverImage, onDeleteCove
 
       {/* Generator */}
       <div style={{ background: "var(--bone-light)", border: "1px solid var(--border)", padding: 14 }}>
+        {brandingImage && (
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "var(--olive)", letterSpacing: "0.08em", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+            <Check size={11} /> ANCHORED TO BRAND IDENTITY SHEET (Tab 1) — palette + mood will carry through
+          </div>
+        )}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
           <label style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, letterSpacing: "0.1em", color: "var(--olive)", fontWeight: 600, textTransform: "uppercase" }}>
             {coverImage ? "Replace cover — image prompt" : "Image prompt"}
@@ -1170,7 +1192,7 @@ function BrandingSheetGenerator({ brief, brandingImage, onSaveBrandingImage, onD
 }
 
 
-function ImageGenerator({ agent, brief, currentDraft, visuals, onSaveVisual, onDeleteVisual }) {
+function ImageGenerator({ agent, brief, currentDraft, visuals, brandingImage, onSaveVisual, onDeleteVisual }) {
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState("1024x1024");
   const [quality, setQuality] = useState("medium");
@@ -1206,6 +1228,23 @@ function ImageGenerator({ agent, brief, currentDraft, visuals, onSaveVisual, onD
     setError(null);
     setWarning(null);
     try {
+      // Anchor every generated visual to the brand identity sheet (if it exists).
+      // The brand sheet establishes palette, mood, and material/finish register —
+      // every downstream image inherits these so the deck reads as one brand world.
+      const brandAnchor = brandingImage?.prompt
+        ? [
+            "",
+            "## BRAND VISUAL IDENTITY (anchor — every generated image must share this visual language)",
+            "The team established this brand identity sheet on Tab 1. Use its palette, mood, typography",
+            "register, and material/finish cues as the visual anchor for this image — palette must match,",
+            "lighting/mood must feel consistent. DO NOT replicate the brand-sheet layout (no swatches,",
+            "no logo grids, no mockup montages); inherit only its visual register.",
+            "",
+            "Brand identity sheet prompt was:",
+            brandingImage.prompt.length > 1200 ? brandingImage.prompt.slice(0, 1200) + "…" : brandingImage.prompt,
+          ].join("\n")
+        : "";
+
       const promptText = [
         "## BRAND BRIEF",
         `- Product idea: ${brief.productIdea || "[unspecified]"}`,
@@ -1214,6 +1253,7 @@ function ImageGenerator({ agent, brief, currentDraft, visuals, onSaveVisual, onD
         `- Disruption vector: ${brief.disruptionVector || "[unspecified]"}`,
         `- Geography: ${brief.geography || "[unspecified]"}`,
         brief.founderStory ? `- Founder story: ${brief.founderStory}` : "",
+        brandAnchor,
         "",
         "## AGENT / SLIDE TYPE",
         `${agent.id} — ${agent.name} (${agent.band} band, ${agent.weight})`,
@@ -1255,30 +1295,31 @@ function ImageGenerator({ agent, brief, currentDraft, visuals, onSaveVisual, onD
 
       const visualRecord = {
         prompt: prompt.trim(),
-        imageUrl: result.imageUrl || null, // public Blob URL; null if Blob not configured
-        imageDataUrl: result.image, // base64 for immediate display
+        imageUrl: result.imageUrl || null, // public Blob URL; null if Blob misfired
+        imageDataUrl: result.image, // base64 — persisted only if imageUrl is missing
         size,
         quality,
       };
 
-      // If Blob is configured, persist to Redis so teammates and future sessions can see it
-      if (onSaveVisual && result.imageUrl) {
+      // PERSISTENCE: always try to save to Redis. The server strips base64 when
+      // imageUrl exists, so the happy path stores ~5KB. When imageUrl is missing
+      // (Blob hiccup), the base64 (~1MB) is kept as fallback so the image still
+      // displays on agent reopen. Either way, the visual survives close/reopen.
+      if (onSaveVisual) {
         try {
           await onSaveVisual(visualRecord);
-          // Saved successfully — relying on `visuals` prop now, clear local fallback
+          // Persisted — `visuals` prop will reflect it on next render
+          if (!result.imageUrl) {
+            setWarning("Blob URL missing for this image — saved with base64 fallback. Image still works for the team, but takes more storage. If this keeps happening, check Vercel Blob is set to PUBLIC.");
+          }
         } catch (saveErr) {
-          // Persistence failed — show locally only and warn
+          // Persistence failed entirely — show locally only
           setLocalImages((prev) => [{ ...visualRecord, id: `local_${Date.now()}` }, ...prev]);
-          setWarning(`Image generated but not saved to team: ${saveErr.message}`);
+          setWarning(`Image generated but persistence failed: ${saveErr.message}. Image lives in your browser only and won't survive reload.`);
         }
       } else {
-        // No Blob configured OR no save handler — fall back to browser-only display
+        // No save handler wired — local-only display
         setLocalImages((prev) => [{ ...visualRecord, id: `local_${Date.now()}` }, ...prev]);
-        if (result.blobError) {
-          setWarning(`Image lives in your browser only — Vercel Blob not configured (${result.blobError}). Enable Blob in Vercel Storage to persist and share.`);
-        } else if (!result.imageUrl) {
-          setWarning("Image lives in your browser only — couldn't generate a public URL. Won't show up for teammates or in Gamma.");
-        }
       }
     } catch (e) {
       setError(e.message);
@@ -1374,6 +1415,11 @@ function ImageGenerator({ agent, brief, currentDraft, visuals, onSaveVisual, onD
           )}
 
           <div style={{ background: "var(--paper)", border: "1px solid var(--border)", padding: 12 }}>
+            {brandingImage && (
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "var(--olive)", letterSpacing: "0.08em", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                <Check size={11} /> ANCHORED TO BRAND IDENTITY SHEET — palette + mood will carry through
+              </div>
+            )}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
               <label style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, letterSpacing: "0.1em", color: "var(--clay)", fontWeight: 600, textTransform: "uppercase" }}>
                 Image Prompt
@@ -1449,7 +1495,7 @@ function ImageGenerator({ agent, brief, currentDraft, visuals, onSaveVisual, onD
   );
 }
 
-function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, workspace, visuals, onBack, onSendMessage, onSaveDraft, onSetWinner, onDeleteDraft, onRemoveImage, onSaveVisual, onDeleteVisual, onLoadDraft, onRunTournament, tournamentResult, isWaiting, refreshing, onRefresh }) {
+function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, workspace, visuals, brandingImage, onBack, onSendMessage, onSaveDraft, onSetWinner, onDeleteDraft, onRemoveImage, onSaveVisual, onDeleteVisual, onLoadDraft, onRunTournament, tournamentResult, isWaiting, refreshing, onRefresh }) {
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState([]); // [{ name, type, size, base64 }]
   const [attachError, setAttachError] = useState(null);
@@ -1640,6 +1686,7 @@ function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, w
         brief={brief}
         currentDraft={currentDraft}
         visuals={visuals || []}
+        brandingImage={brandingImage}
         onSaveVisual={onSaveVisual}
         onDeleteVisual={onDeleteVisual}
       />
@@ -1876,7 +1923,7 @@ function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, w
   );
 }
 
-function ExportView({ brief, draftsByAgent, winners }) {
+function ExportView({ brief, draftsByAgent, winners, coverImage, saveCoverImage, deleteCoverImage, brandingImage }) {
   const [ashleyReview, setAshleyReview] = useState(null);
   const [runningAshley, setRunningAshley] = useState(false);
   const [ashleyError, setAshleyError] = useState(null);
@@ -2376,6 +2423,7 @@ function ExportView({ brief, draftsByAgent, winners }) {
       <CoverImageGenerator
         brief={brief}
         coverImage={coverImage}
+        brandingImage={brandingImage}
         onSaveCoverImage={saveCoverImage}
         onDeleteCoverImage={deleteCoverImage}
       />
@@ -3091,6 +3139,7 @@ export default function Page() {
               upstreamLocks={getUpstreamLocks(openAgentId)}
               workspace={workspaces[openAgentId]}
               visuals={visualsByAgent[openAgentId] || []}
+              brandingImage={brandingImage}
               onBack={() => setOpenAgentId(null)}
               onSendMessage={(msg, atts) => sendAgentMessage(openAgentId, msg, atts)}
               onSaveDraft={(name, content, imgUrl, imgDesc, imgPublicUrl) => saveDraft(openAgentId, name, content, imgUrl, imgDesc, imgPublicUrl)}
@@ -3133,7 +3182,15 @@ export default function Page() {
             />
           )}
           {activeTab === "export" && (
-            <ExportView brief={brief} draftsByAgent={draftsByAgent} winners={winners} />
+            <ExportView
+              brief={brief}
+              draftsByAgent={draftsByAgent}
+              winners={winners}
+              coverImage={coverImage}
+              saveCoverImage={saveCoverImage}
+              deleteCoverImage={deleteCoverImage}
+              brandingImage={brandingImage}
+            />
           )}
         </>
       )}
