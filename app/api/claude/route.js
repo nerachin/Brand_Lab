@@ -10,7 +10,10 @@ function getClient() {
   if (!apiKey) {
     throw new Error("ANTHROPIC_API_KEY not set. Add it to your Vercel environment variables.");
   }
-  return new Anthropic({ apiKey });
+  // maxRetries 5 with exponential backoff covers most 529 "Overloaded" blips silently.
+  // SDK default is 2; bumping it is the cheapest way to make Ashley's Final Read
+  // and tournament calls resilient when Anthropic infrastructure is under load.
+  return new Anthropic({ apiKey, maxRetries: 5 });
 }
 
 // Default model — sensible choice for cost/quality balance.
@@ -68,6 +71,21 @@ export async function POST(request) {
     return Response.json({ text });
   } catch (err) {
     console.error("Claude API error:", err);
+    // Make overload errors human-readable instead of dumping raw JSON in the UI
+    const status = err?.status || err?.response?.status;
+    const isOverload =
+      status === 529 ||
+      /overloaded/i.test(err?.message || "") ||
+      /overloaded/i.test(JSON.stringify(err?.error || {}));
+    if (isOverload) {
+      return Response.json(
+        {
+          error:
+            "Anthropic's API is temporarily overloaded. We auto-retried five times. Wait 30–60 seconds and try again — usually clears fast.",
+        },
+        { status: 529 }
+      );
+    }
     return Response.json(
       { error: err.message || "Unknown error calling Claude" },
       { status: 500 }

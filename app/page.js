@@ -47,6 +47,10 @@ async function callStorage(action, params = {}) {
   return api("/api/storage", { action, ...params });
 }
 
+async function callGamma(action, params = {}) {
+  return api("/api/gamma", { action, ...params });
+}
+
 // =============================================================
 // MARKDOWN RENDERER
 // =============================================================
@@ -808,6 +812,7 @@ function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, w
     setSaveError(null);
     try {
       let imageDataUrl = null;
+      let imagePublicUrl = null;
       let imageDesc = null;
       if (includeImage && imageDescription.trim()) {
         // Generate image first
@@ -818,9 +823,10 @@ function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, w
         });
         if (imgResult.error) throw new Error(`Image generation failed: ${imgResult.error}`);
         imageDataUrl = imgResult.image;
+        imagePublicUrl = imgResult.imageUrl || null; // null if Blob not configured
         imageDesc = imageDescription.trim();
       }
-      await onSaveDraft(draftName.trim(), currentDraft, imageDataUrl, imageDesc);
+      await onSaveDraft(draftName.trim(), currentDraft, imageDataUrl, imageDesc, imagePublicUrl);
       setDraftName("");
       setIncludeImage(false);
       setImageDescription("");
@@ -1067,6 +1073,12 @@ function ExportView({ brief, draftsByAgent, winners }) {
   const [runningAshley, setRunningAshley] = useState(false);
   const [ashleyError, setAshleyError] = useState(null);
   const [pptStatus, setPptStatus] = useState("idle");
+
+  // Gamma generation state
+  const [gammaStatus, setGammaStatus] = useState("idle"); // idle | starting | polling | done | error
+  const [gammaError, setGammaError] = useState(null);
+  const [gammaResult, setGammaResult] = useState(null); // { gammaUrl, exportUrl, credits }
+  const [gammaProgress, setGammaProgress] = useState({ attempt: 0, elapsed: 0 });
 
   const buildDeck = () => {
     let md = `# Brand Experience Deck\n\n## Brief\n`;
@@ -1340,6 +1352,63 @@ function ExportView({ brief, draftsByAgent, winners }) {
     }
   };
 
+  // ===== Gamma generation =====
+  const generateViaGamma = async () => {
+    setGammaStatus("starting");
+    setGammaError(null);
+    setGammaResult(null);
+    setGammaProgress({ attempt: 0, elapsed: 0 });
+    const startTime = Date.now();
+
+    try {
+      // Step 1: kick off the generation (server reads from Redis, builds markdown,
+      // backfills any base64-only images to Blob, POSTs to Gamma)
+      const startRes = await callGamma("start", {});
+      if (startRes.error) throw new Error(startRes.error);
+      const { generationId } = startRes;
+      if (!generationId) throw new Error("No generationId returned from Gamma");
+
+      // Step 2: poll on the client. Vercel Hobby caps functions at 60s; Gamma
+      // generations take 2-3 minutes, so we MUST poll from the browser, not the server.
+      setGammaStatus("polling");
+      const MAX_ATTEMPTS = 60; // 60 × 5s = 5 minutes ceiling
+      const POLL_INTERVAL = 5000;
+
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+        setGammaProgress({
+          attempt,
+          elapsed: Math.round((Date.now() - startTime) / 1000),
+        });
+        const statusRes = await callGamma("status", { generationId });
+        if (statusRes.error) throw new Error(statusRes.error);
+
+        if (statusRes.status === "completed") {
+          setGammaResult({
+            gammaUrl: statusRes.gammaUrl,
+            exportUrl: statusRes.exportUrl,
+            credits: statusRes.credits,
+          });
+          setGammaStatus("done");
+          return;
+        }
+        if (statusRes.status === "failed") {
+          throw new Error(
+            `Gamma generation failed: ${
+              statusRes.error?.message || JSON.stringify(statusRes.error)
+            }`
+          );
+        }
+        // status === "pending" — keep polling
+      }
+      throw new Error("Gamma generation timed out after 5 minutes. Check your Gamma dashboard — it may have completed there.");
+    } catch (e) {
+      console.error("Gamma error:", e);
+      setGammaError(e.message);
+      setGammaStatus("error");
+    }
+  };
+
   const fullMd = buildDeck();
   const winnerCount = Object.keys(winners).length;
   const draftedCount = AGENTS.filter((a) => (draftsByAgent[a.id] || []).length > 0).length;
@@ -1411,6 +1480,123 @@ function ExportView({ brief, draftsByAgent, winners }) {
             >
               <Copy size={10} /> COPY ASHLEY'S REVIEW
             </button>
+          </div>
+        )}
+      </div>
+
+      {/* === Generate via Gamma === */}
+      <div style={{ background: "var(--paper)", border: "1px solid var(--ink)", borderLeft: "4px solid var(--gold)", padding: "24px 28px", marginBottom: 28 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+          <Sparkles size={18} color="var(--gold)" />
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.15em", color: "var(--gold)", fontWeight: 600 }}>
+            GENERATE VIA GAMMA · DESIGNED DECK
+          </div>
+        </div>
+        <h3 style={{ fontFamily: "'Fraunces', serif", fontSize: 24, fontWeight: 600, margin: "0 0 8px", letterSpacing: "-0.01em" }}>
+          Ship the deck through Gamma
+        </h3>
+        <p style={{ color: "var(--ink-soft)", fontSize: 14, marginBottom: 16, lineHeight: 1.6, maxWidth: 720 }}>
+          Sends every winning section (plus attached images) to Gamma's Generate API. Gamma applies an editorial layout, then exports a real .pptx. Takes 2–3 minutes. Requires Gamma Pro plan and Vercel Blob enabled.
+        </p>
+
+        {/* Image-backfill warning */}
+        {(() => {
+          const allDrafts = Object.values(draftsByAgent).flat();
+          const imagesNeedingBackfill = allDrafts.filter(
+            (d) => d.imageDataUrl && !d.imagePublicUrl
+          ).length;
+          if (imagesNeedingBackfill === 0) return null;
+          return (
+            <div style={{ background: "var(--bone-light)", border: "1px solid var(--gold)", padding: "10px 14px", marginBottom: 14, fontSize: 12, color: "var(--ink-soft)", lineHeight: 1.5 }}>
+              <strong>{imagesNeedingBackfill}</strong> image{imagesNeedingBackfill === 1 ? "" : "s"} {imagesNeedingBackfill === 1 ? "was" : "were"} generated before Blob hosting was enabled. Gamma will auto-upload {imagesNeedingBackfill === 1 ? "it" : "them"} on first run — adds ~5 seconds.
+            </div>
+          );
+        })()}
+
+        <button
+          onClick={generateViaGamma}
+          disabled={gammaStatus === "starting" || gammaStatus === "polling" || draftedCount === 0}
+          style={{
+            background: gammaStatus === "done" ? "var(--olive)" : gammaStatus === "error" ? "var(--rose)" : (gammaStatus === "starting" || gammaStatus === "polling") ? "var(--gold)" : "var(--ink)",
+            color: "var(--bone)", border: "none", padding: "12px 24px",
+            cursor: (gammaStatus === "starting" || gammaStatus === "polling" || draftedCount === 0) ? "not-allowed" : "pointer",
+            fontSize: 12, display: "inline-flex", alignItems: "center", gap: 8,
+            letterSpacing: "0.06em", textTransform: "uppercase",
+          }}
+        >
+          {(gammaStatus === "starting" || gammaStatus === "polling") ? <Loader2 size={13} className="spin-icon" /> : gammaStatus === "done" ? <Check size={13} /> : <Sparkles size={13} />}
+          {gammaStatus === "idle" && "GENERATE VIA GAMMA"}
+          {gammaStatus === "starting" && "STARTING GENERATION…"}
+          {gammaStatus === "polling" && `GENERATING (${gammaProgress.elapsed}s)…`}
+          {gammaStatus === "done" && "GENERATED · SEE BELOW"}
+          {gammaStatus === "error" && "FAILED · TRY AGAIN"}
+        </button>
+        {draftedCount === 0 && (
+          <span style={{ marginLeft: 12, fontSize: 12, color: "var(--warm-gray)", fontStyle: "italic" }}>
+            Save at least one draft first.
+          </span>
+        )}
+
+        {/* Status detail during polling */}
+        {gammaStatus === "polling" && (
+          <div style={{ marginTop: 14, fontSize: 12, color: "var(--ink-soft)", fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.04em" }}>
+            Poll {gammaProgress.attempt} · {gammaProgress.elapsed}s elapsed · Gamma typically completes in 90–180s
+          </div>
+        )}
+
+        {/* Error display */}
+        {gammaError && (
+          <div style={{ marginTop: 14, padding: "10px 14px", background: "var(--bone-light)", border: "1px solid var(--rose)", color: "var(--rose)", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", lineHeight: 1.5, wordBreak: "break-word" }}>
+            ⚠ {gammaError}
+          </div>
+        )}
+
+        {/* Result links */}
+        {gammaResult && (
+          <div style={{ marginTop: 18, padding: "18px 22px", background: "var(--bone-light)", border: "1px solid var(--olive)", borderLeft: "4px solid var(--olive)" }}>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "var(--olive)", letterSpacing: "0.1em", marginBottom: 10, fontWeight: 600 }}>
+              ✓ READY TO DOWNLOAD
+            </div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              {gammaResult.exportUrl && (
+                <a
+                  href={gammaResult.exportUrl}
+                  download="brand_lab_deck.pptx"
+                  style={{
+                    background: "var(--ink)", color: "var(--bone)",
+                    padding: "10px 18px", textDecoration: "none",
+                    fontSize: 12, display: "inline-flex", alignItems: "center", gap: 8,
+                    letterSpacing: "0.06em", textTransform: "uppercase",
+                    fontFamily: "'JetBrains Mono', monospace", fontWeight: 600,
+                  }}
+                >
+                  <Download size={13} /> DOWNLOAD .PPTX
+                </a>
+              )}
+              {gammaResult.gammaUrl && (
+                <a
+                  href={gammaResult.gammaUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    background: "transparent", border: "1px solid var(--ink)", color: "var(--ink)",
+                    padding: "9px 16px", textDecoration: "none",
+                    fontSize: 11, display: "inline-flex", alignItems: "center", gap: 6,
+                    letterSpacing: "0.06em", textTransform: "uppercase",
+                  }}
+                >
+                  EDIT IN GAMMA →
+                </a>
+              )}
+              {gammaResult.credits && (
+                <span style={{ fontSize: 11, color: "var(--warm-gray)", fontFamily: "'JetBrains Mono', monospace", marginLeft: 6 }}>
+                  {gammaResult.credits.deducted} credits used · {gammaResult.credits.remaining} remaining
+                </span>
+              )}
+            </div>
+            <p style={{ fontSize: 11, color: "var(--warm-gray)", marginTop: 12, marginBottom: 0, lineHeight: 1.5 }}>
+              Export URL expires in ~1 week. Download promptly. Open in PowerPoint and expect ~15 min of polish (Gamma's card layouts don't always map cleanly to 16:9 — text may need nudging).
+            </p>
           </div>
         )}
       </div>
@@ -1619,7 +1805,7 @@ export default function Page() {
     }
   };
 
-  const saveDraft = async (agentId, name, content, imageDataUrl, imageDescription) => {
+  const saveDraft = async (agentId, name, content, imageDataUrl, imageDescription, imagePublicUrl) => {
     const draftId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const draft = {
       id: draftId,
@@ -1632,6 +1818,9 @@ export default function Page() {
     if (imageDataUrl) {
       draft.imageDataUrl = imageDataUrl;
       draft.imageDescription = imageDescription || "";
+      if (imagePublicUrl) {
+        draft.imagePublicUrl = imagePublicUrl;
+      }
     }
     try {
       await callStorage("saveDraft", { draft });
@@ -1796,7 +1985,7 @@ export default function Page() {
               workspace={workspaces[openAgentId]}
               onBack={() => setOpenAgentId(null)}
               onSendMessage={(msg) => sendAgentMessage(openAgentId, msg)}
-              onSaveDraft={(name, content, imgUrl, imgDesc) => saveDraft(openAgentId, name, content, imgUrl, imgDesc)}
+              onSaveDraft={(name, content, imgUrl, imgDesc, imgPublicUrl) => saveDraft(openAgentId, name, content, imgUrl, imgDesc, imgPublicUrl)}
               onSetWinner={(draftId) => setDraftAsWinner(openAgentId, draftId)}
               onDeleteDraft={(draftId) => deleteDraft(openAgentId, draftId)}
               onRemoveImage={(draftId) => removeImageFromDraft(openAgentId, draftId)}

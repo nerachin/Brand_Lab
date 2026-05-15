@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { uploadBase64ImageToBlob } from "@/lib/blob";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -41,14 +42,35 @@ export async function POST(request) {
 
     // gpt-image-1/2 returns b64_json by default
     if (data.b64_json) {
+      const dataUrl = `data:image/png;base64,${data.b64_json}`;
+
+      // Try to upload to Vercel Blob so Gamma can consume it later.
+      // Best-effort: if Blob isn't configured, log and continue with base64 only.
+      let publicUrl = null;
+      let blobError = null;
+      try {
+        publicUrl = await uploadBase64ImageToBlob(dataUrl, prompt.trim().slice(0, 30));
+      } catch (e) {
+        console.warn("Blob upload failed (continuing with base64 only):", e.message);
+        blobError = e.message;
+      }
+
       return Response.json({
-        image: `data:image/png;base64,${data.b64_json}`,
+        image: dataUrl,
+        imageUrl: publicUrl, // null if Blob not configured
+        blobError, // surfaced so client can warn the user once
         prompt: prompt.trim(),
         model: DEFAULT_MODEL,
       });
     }
     if (data.url) {
-      return Response.json({ image: data.url, prompt: prompt.trim(), model: DEFAULT_MODEL });
+      // Hosted URL path — already public, just return it
+      return Response.json({
+        image: data.url,
+        imageUrl: data.url,
+        prompt: prompt.trim(),
+        model: DEFAULT_MODEL,
+      });
     }
     return Response.json({ error: "unexpected image format" }, { status: 500 });
   } catch (err) {
