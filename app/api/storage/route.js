@@ -30,81 +30,120 @@ export async function POST(request) {
 
     switch (action) {
       case "loadAll": {
-        // Return brief, all drafts grouped, all winners, all tournaments, all visuals
-        const briefRaw = await redis.get("brief");
-        const draftKeys = await redis.keys("draft:*");
-        const winnerKeys = await redis.keys("winner:*");
-        const tournamentKeys = await redis.keys("tournament:*");
-        const visualKeys = await redis.keys("visual:*");
+        // RESILIENT LOAD: each section is wrapped in try/catch so one failure
+        // doesn't nuke the whole response. Brief is the highest-value data —
+        // it must always come back if it exists in Redis.
+        const loadErrors = []; // [{ section, message }]
 
-        const draftsByAgent = {};
-        if (draftKeys.length > 0) {
-          const draftValues = await redis.mget(...draftKeys);
-          for (let i = 0; i < draftKeys.length; i++) {
-            const val = draftValues[i];
-            if (!val) continue;
-            const draft = typeof val === "string" ? JSON.parse(val) : val;
-            if (!draftsByAgent[draft.agentId]) draftsByAgent[draft.agentId] = [];
-            draftsByAgent[draft.agentId].push(draft);
-          }
-          // sort each agent's drafts by createdAt
-          for (const aId of Object.keys(draftsByAgent)) {
-            draftsByAgent[aId].sort((a, b) => a.createdAt - b.createdAt);
-          }
-        }
-
-        const winners = {};
-        if (winnerKeys.length > 0) {
-          const winnerValues = await redis.mget(...winnerKeys);
-          for (let i = 0; i < winnerKeys.length; i++) {
-            const agentId = winnerKeys[i].replace("winner:", "");
-            winners[agentId] = winnerValues[i];
-          }
-        }
-
-        const tournaments = {};
-        if (tournamentKeys.length > 0) {
-          const tValues = await redis.mget(...tournamentKeys);
-          for (let i = 0; i < tournamentKeys.length; i++) {
-            const agentId = tournamentKeys[i].replace("tournament:", "");
-            const val = tValues[i];
-            if (val) {
-              tournaments[agentId] = typeof val === "string" ? JSON.parse(val) : val;
-            }
-          }
-        }
-
-        const visualsByAgent = {};
-        if (visualKeys.length > 0) {
-          const visualValues = await redis.mget(...visualKeys);
-          for (let i = 0; i < visualKeys.length; i++) {
-            const val = visualValues[i];
-            if (!val) continue;
-            const visual = typeof val === "string" ? JSON.parse(val) : val;
-            if (!visualsByAgent[visual.agentId]) visualsByAgent[visual.agentId] = [];
-            visualsByAgent[visual.agentId].push(visual);
-          }
-          for (const aId of Object.keys(visualsByAgent)) {
-            visualsByAgent[aId].sort((a, b) => a.createdAt - b.createdAt);
-          }
-        }
-
+        // ---- Brief (small, always read first) ----
         let brief = {};
         let briefMeta = {};
-        if (briefRaw) {
-          const parsed = typeof briefRaw === "string" ? JSON.parse(briefRaw) : briefRaw;
-          brief = parsed.brief || {};
-          briefMeta = parsed.meta || {};
+        try {
+          const briefRaw = await redis.get("brief");
+          if (briefRaw) {
+            const parsed = typeof briefRaw === "string" ? JSON.parse(briefRaw) : briefRaw;
+            brief = parsed.brief || {};
+            briefMeta = parsed.meta || {};
+          }
+        } catch (e) {
+          loadErrors.push({ section: "brief", message: e?.message || String(e) });
         }
 
-        // Cover image (single slot, not per-agent)
-        const coverImageRaw = await redis.get("cover_image");
+        // ---- Drafts ----
+        const draftsByAgent = {};
+        try {
+          const draftKeys = await redis.keys("draft:*");
+          if (draftKeys.length > 0) {
+            const draftValues = await redis.mget(...draftKeys);
+            for (let i = 0; i < draftKeys.length; i++) {
+              const val = draftValues[i];
+              if (!val) continue;
+              try {
+                const draft = typeof val === "string" ? JSON.parse(val) : val;
+                if (!draftsByAgent[draft.agentId]) draftsByAgent[draft.agentId] = [];
+                draftsByAgent[draft.agentId].push(draft);
+              } catch {} // skip individual bad records
+            }
+            for (const aId of Object.keys(draftsByAgent)) {
+              draftsByAgent[aId].sort((a, b) => a.createdAt - b.createdAt);
+            }
+          }
+        } catch (e) {
+          loadErrors.push({ section: "drafts", message: e?.message || String(e) });
+        }
+
+        // ---- Winners ----
+        const winners = {};
+        try {
+          const winnerKeys = await redis.keys("winner:*");
+          if (winnerKeys.length > 0) {
+            const winnerValues = await redis.mget(...winnerKeys);
+            for (let i = 0; i < winnerKeys.length; i++) {
+              winners[winnerKeys[i].replace("winner:", "")] = winnerValues[i];
+            }
+          }
+        } catch (e) {
+          loadErrors.push({ section: "winners", message: e?.message || String(e) });
+        }
+
+        // ---- Tournaments ----
+        const tournaments = {};
+        try {
+          const tournamentKeys = await redis.keys("tournament:*");
+          if (tournamentKeys.length > 0) {
+            const tValues = await redis.mget(...tournamentKeys);
+            for (let i = 0; i < tournamentKeys.length; i++) {
+              const agentId = tournamentKeys[i].replace("tournament:", "");
+              const val = tValues[i];
+              if (val) {
+                try {
+                  tournaments[agentId] = typeof val === "string" ? JSON.parse(val) : val;
+                } catch {}
+              }
+            }
+          }
+        } catch (e) {
+          loadErrors.push({ section: "tournaments", message: e?.message || String(e) });
+        }
+
+        // ---- Visuals (most likely to be oversized — wrap defensively) ----
+        const visualsByAgent = {};
+        try {
+          const visualKeys = await redis.keys("visual:*");
+          if (visualKeys.length > 0) {
+            const visualValues = await redis.mget(...visualKeys);
+            for (let i = 0; i < visualKeys.length; i++) {
+              const val = visualValues[i];
+              if (!val) continue;
+              try {
+                const visual = typeof val === "string" ? JSON.parse(val) : val;
+                if (!visualsByAgent[visual.agentId]) visualsByAgent[visual.agentId] = [];
+                visualsByAgent[visual.agentId].push(visual);
+              } catch {}
+            }
+            for (const aId of Object.keys(visualsByAgent)) {
+              visualsByAgent[aId].sort((a, b) => a.createdAt - b.createdAt);
+            }
+          }
+        } catch (e) {
+          loadErrors.push({ section: "visuals", message: e?.message || String(e) });
+        }
+
+        // ---- Cover image ----
         let coverImage = null;
-        if (coverImageRaw) {
-          coverImage = typeof coverImageRaw === "string" ? JSON.parse(coverImageRaw) : coverImageRaw;
+        try {
+          const coverImageRaw = await redis.get("cover_image");
+          if (coverImageRaw) {
+            coverImage = typeof coverImageRaw === "string" ? JSON.parse(coverImageRaw) : coverImageRaw;
+          }
+        } catch (e) {
+          loadErrors.push({ section: "coverImage", message: e?.message || String(e) });
         }
 
-        return Response.json({ brief, briefMeta, draftsByAgent, winners, tournaments, visualsByAgent, coverImage });
+        return Response.json({
+          brief, briefMeta, draftsByAgent, winners, tournaments, visualsByAgent, coverImage,
+          loadErrors, // [] when everything succeeded
+        });
       }
 
       case "saveBrief": {

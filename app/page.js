@@ -312,21 +312,65 @@ function TabNav({ active, onChange, briefReady, anyDrafts }) {
 function BriefForm({ brief, briefMeta, user, onSave, onContinue }) {
   const [local, setLocal] = useState(brief);
   const [saving, setSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState(null); // null | "saved" | "saving" | "error: ..."
+  const debounceRef = useRef(null);
+  const lastSavedRef = useRef(JSON.stringify(brief)); // track last server-confirmed brief
 
-  useEffect(() => { setLocal(brief); }, [brief]);
+  useEffect(() => {
+    setLocal(brief);
+    lastSavedRef.current = JSON.stringify(brief);
+  }, [brief]);
 
   const labelStyle = { fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--clay)", fontWeight: 600, marginBottom: 5, display: "block" };
   const inputStyle = { width: "100%", background: "var(--paper)", border: "1px solid var(--border)", padding: "10px 12px", fontSize: 15, color: "var(--ink)", outline: "none", boxSizing: "border-box" };
 
   const update = (field) => (e) => setLocal({ ...local, [field]: e.target.value });
   const ready = local.productIdea && local.industry && local.incumbentName && local.disruptionVector;
-  const dirty = JSON.stringify(local) !== JSON.stringify(brief);
+  const dirty = JSON.stringify(local) !== lastSavedRef.current;
+
+  // Imperative save — used by manual button AND autosave timer
+  const doSave = async (toSave) => {
+    setSaving(true);
+    setSaveStatus("saving");
+    try {
+      await onSave(toSave);
+      lastSavedRef.current = JSON.stringify(toSave);
+      setSaveStatus("saved");
+    } catch (e) {
+      setSaveStatus("error: " + e.message);
+      // re-throw so the manual save button can also alert
+      throw e;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Autosave with 1.2s debounce after last edit. Only fires when the four required
+  // fields are filled (avoids saving half-baked briefs that block the Continue button).
+  useEffect(() => {
+    if (!dirty || !ready) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      doSave(local).catch(() => {}); // error already captured in saveStatus
+    }, 1200);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [local, dirty, ready]);
+
+  // Browser unload warning if there are unsaved changes — last-resort safety net
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (e) => {
+      e.preventDefault();
+      e.returnValue = "You have unsaved changes to the brief.";
+      return e.returnValue;
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [dirty]);
 
   const save = async () => {
-    setSaving(true);
-    try { await onSave(local); }
+    try { await doSave(local); }
     catch (e) { alert("Save failed: " + e.message); }
-    finally { setSaving(false); }
   };
 
   return (
@@ -401,18 +445,30 @@ function BriefForm({ brief, briefMeta, user, onSave, onContinue }) {
       </div>
 
       <div style={{ marginTop: 28, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
-        <div style={{ fontSize: 13, color: "var(--warm-gray)", fontStyle: "italic" }}>
-          {!ready ? "Fill the four required fields to continue." : dirty ? "You have unsaved changes." : "Brief saved. Ready to run agents."}
+        <div style={{ fontSize: 13, color: "var(--warm-gray)", fontStyle: "italic", display: "flex", alignItems: "center", gap: 8 }}>
+          {!ready ? (
+            "Fill the four required fields — autosave starts when all four are filled."
+          ) : saveStatus === "saving" ? (
+            <><Loader2 size={13} className="spin-icon" /> Auto-saving…</>
+          ) : saveStatus && saveStatus.startsWith("error:") ? (
+            <span style={{ color: "var(--rose)", fontStyle: "normal", fontFamily: "'JetBrains Mono', monospace", fontSize: 12 }}>
+              ⚠ Auto-save failed: {saveStatus.slice(7)}. Click SAVE NOW to retry.
+            </span>
+          ) : dirty ? (
+            "You have unsaved changes. Auto-saving in ~1 second…"
+          ) : (
+            <><Check size={13} color="var(--olive)" /> Brief saved to team. Ready to run agents.</>
+          )}
         </div>
         <div style={{ display: "flex", gap: 10 }}>
-          {dirty && (
+          {(dirty || (saveStatus && saveStatus.startsWith("error:"))) && (
             <button
               onClick={save}
               disabled={!ready || saving}
               style={{ background: ready ? "var(--clay)" : "var(--border)", color: ready ? "var(--bone)" : "var(--warm-gray)", border: "none", padding: "11px 22px", cursor: ready && !saving ? "pointer" : "not-allowed", fontSize: 12, display: "flex", alignItems: "center", gap: 8, letterSpacing: "0.06em", textTransform: "uppercase" }}
             >
               {saving ? <Loader2 size={13} className="spin-icon" /> : <Save size={13} />}
-              {saving ? "SAVING…" : "SAVE BRIEF FOR EVERYONE"}
+              {saving ? "SAVING…" : (saveStatus && saveStatus.startsWith("error:") ? "RETRY SAVE" : "SAVE NOW")}
             </button>
           )}
           <button
@@ -2353,6 +2409,17 @@ export default function Page() {
       setCoverImage(data.coverImage || null);
       setNeedsPassword(false);
       setPasswordError("");
+      // Surface per-section load failures — these happen when one Redis section
+      // (usually visuals with accumulated base64) is oversized but other sections load fine
+      if (Array.isArray(data.loadErrors) && data.loadErrors.length > 0) {
+        console.warn("Partial load — some sections failed:", data.loadErrors);
+        const sections = data.loadErrors.map((e) => `${e.section} (${e.message})`).join(", ");
+        // Non-blocking notice for the user
+        if (typeof window !== "undefined") {
+          // Use a non-blocking console + a small banner via state
+          window.__brandLabLoadErrors = data.loadErrors;
+        }
+      }
     } catch (e) {
       if (e.message === "AUTH_REQUIRED") {
         setNeedsPassword(true);
