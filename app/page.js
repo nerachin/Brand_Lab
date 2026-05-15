@@ -43,6 +43,10 @@ async function callClaude(mode, params) {
   return api("/api/claude", { mode, ...params });
 }
 
+async function callOpenAI(mode, params) {
+  return api("/api/openai", { mode, ...params });
+}
+
 async function callStorage(action, params = {}) {
   return api("/api/storage", { action, ...params });
 }
@@ -1291,7 +1295,7 @@ function ExportView({ brief, draftsByAgent, winners }) {
       }
       promptText += "\nNow give me your final read, Ashley. Don't soften.";
 
-      const { text } = await callClaude("ashley_final", { promptText });
+      const { text } = await callOpenAI("ashley_final", { promptText });
       setAshleyReview(text);
     } catch (e) {
       setAshleyError(e.message);
@@ -2145,7 +2149,7 @@ export default function Page() {
       });
       promptText += "\nNow grade each, pick the winner, and explain why.";
 
-      const { text } = await callClaude("tournament", { promptText });
+      const { text } = await callOpenAI("tournament", { promptText });
 
       const winnerMatch = text.match(/##\s*Winner\s*\n+\s*Draft\s+(\d+)/i);
       let pickedId = null;
