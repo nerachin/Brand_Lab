@@ -2004,6 +2004,33 @@ function ExportView({ brief, draftsByAgent, winners }) {
         )}
       </div>
 
+      {/* === Storage maintenance — emergency Upstash bandwidth recovery === */}
+      <div style={{ background: "var(--bone-light)", border: "1px solid var(--border)", padding: "12px 16px", marginBottom: 20, fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ color: "var(--ink-soft)", fontSize: 11, letterSpacing: "0.04em" }}>
+            STORAGE MAINTENANCE · Run if saving fails or you hit Upstash quota
+          </div>
+          <button
+            onClick={compactStorage}
+            disabled={compactStatus === "running"}
+            style={{
+              background: "transparent", border: "1px solid var(--ink-soft)", color: "var(--ink-soft)",
+              padding: "5px 12px", cursor: compactStatus === "running" ? "wait" : "pointer",
+              fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase",
+              display: "inline-flex", alignItems: "center", gap: 6,
+            }}
+          >
+            {compactStatus === "running" ? <Loader2 size={11} className="spin-icon" /> : <Zap size={11} />}
+            {compactStatus === "running" ? "COMPACTING…" : "COMPACT STORAGE"}
+          </button>
+        </div>
+        {compactStatus && compactStatus !== "running" && (
+          <div style={{ marginTop: 8, fontSize: 11, color: compactStatus.startsWith("Failed") ? "var(--rose)" : "var(--olive)", lineHeight: 1.5 }}>
+            {compactStatus.startsWith("Failed") ? "⚠ " : "✓ "}{compactStatus}
+          </div>
+        )}
+      </div>
+
       {/* === Cover Image — title slide hero === */}
       <CoverImageGenerator
         brief={brief}
@@ -2529,6 +2556,26 @@ export default function Page() {
       setCoverImage(null);
     } catch (e) {
       alert("Failed to delete cover image: " + e.message);
+    }
+  };
+
+  const [compactStatus, setCompactStatus] = useState(null); // null | "running" | string
+  const compactStorage = async () => {
+    if (!window.confirm(
+      "Compact storage will strip the base64 image data from any saved drafts, visuals, and covers " +
+      "that already have public URLs. This saves Upstash bandwidth dramatically. Safe to run — your " +
+      "images stay accessible via their public URLs. Continue?"
+    )) return;
+    setCompactStatus("running");
+    try {
+      const result = await callStorage("compactStorage");
+      setCompactStatus(
+        `Compacted: ${result.draftsCompacted} drafts, ${result.visualsCompacted} visuals` +
+        (result.coverCompacted ? ", 1 cover" : "") +
+        `. Freed ${result.mbFreed} MB. Refresh to load the lighter records.`
+      );
+    } catch (e) {
+      setCompactStatus("Failed: " + e.message);
     }
   };
 

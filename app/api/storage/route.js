@@ -118,7 +118,14 @@ export async function POST(request) {
         if (!draft?.id || !draft?.agentId) {
           return Response.json({ error: "draft.id and draft.agentId required" }, { status: 400 });
         }
-        await redis.set(`draft:${draft.agentId}:${draft.id}`, JSON.stringify(draft));
+        // BANDWIDTH OPTIMIZATION: if we have a public Blob URL, drop the base64.
+        // Each base64 image is ~1MB; reading them on every loadAll burns the Upstash
+        // free-tier bandwidth quota fast. Public Blob URLs are stable, so we don't
+        // need the base64 fallback once the upload succeeded.
+        const persisted = draft.imagePublicUrl
+          ? { ...draft, imageDataUrl: null }
+          : draft;
+        await redis.set(`draft:${draft.agentId}:${draft.id}`, JSON.stringify(persisted));
         return Response.json({ ok: true });
       }
 
@@ -173,7 +180,11 @@ export async function POST(request) {
         if (!visual?.id || !visual?.agentId) {
           return Response.json({ error: "visual.id and visual.agentId required" }, { status: 400 });
         }
-        await redis.set(`visual:${visual.agentId}:${visual.id}`, JSON.stringify(visual));
+        // Same bandwidth optimization as saveDraft
+        const persisted = visual.imageUrl
+          ? { ...visual, imageDataUrl: null }
+          : visual;
+        await redis.set(`visual:${visual.agentId}:${visual.id}`, JSON.stringify(persisted));
         return Response.json({ ok: true });
       }
 
@@ -188,13 +199,74 @@ export async function POST(request) {
         if (!coverImage) {
           return Response.json({ error: "coverImage required" }, { status: 400 });
         }
-        await redis.set("cover_image", JSON.stringify(coverImage));
+        // Same bandwidth optimization
+        const persisted = coverImage.imageUrl
+          ? { ...coverImage, imageDataUrl: null }
+          : coverImage;
+        await redis.set("cover_image", JSON.stringify(persisted));
         return Response.json({ ok: true });
       }
 
       case "deleteCoverImage": {
         await redis.del("cover_image");
         return Response.json({ ok: true });
+      }
+
+      case "compactStorage": {
+        // EMERGENCY action: walk every draft, visual, and cover image — strip the
+        // base64 imageDataUrl from any record that already has a public URL.
+        // Run this once after deploying the bandwidth fix to clean up legacy records.
+        // Returns counts so the client can show what changed.
+        let draftsCompacted = 0;
+        let visualsCompacted = 0;
+        let coverCompacted = false;
+        let bytesFreed = 0;
+
+        const draftKeys = await redis.keys("draft:*");
+        for (const key of draftKeys) {
+          const raw = await redis.get(key);
+          if (!raw) continue;
+          const d = typeof raw === "string" ? JSON.parse(raw) : raw;
+          if (d.imageDataUrl && d.imagePublicUrl) {
+            bytesFreed += d.imageDataUrl.length;
+            d.imageDataUrl = null;
+            await redis.set(key, JSON.stringify(d));
+            draftsCompacted++;
+          }
+        }
+
+        const visualKeys = await redis.keys("visual:*");
+        for (const key of visualKeys) {
+          const raw = await redis.get(key);
+          if (!raw) continue;
+          const v = typeof raw === "string" ? JSON.parse(raw) : raw;
+          if (v.imageDataUrl && v.imageUrl) {
+            bytesFreed += v.imageDataUrl.length;
+            v.imageDataUrl = null;
+            await redis.set(key, JSON.stringify(v));
+            visualsCompacted++;
+          }
+        }
+
+        const coverRaw = await redis.get("cover_image");
+        if (coverRaw) {
+          const c = typeof coverRaw === "string" ? JSON.parse(coverRaw) : coverRaw;
+          if (c.imageDataUrl && c.imageUrl) {
+            bytesFreed += c.imageDataUrl.length;
+            c.imageDataUrl = null;
+            await redis.set("cover_image", JSON.stringify(c));
+            coverCompacted = true;
+          }
+        }
+
+        return Response.json({
+          ok: true,
+          draftsCompacted,
+          visualsCompacted,
+          coverCompacted,
+          bytesFreed,
+          mbFreed: (bytesFreed / 1024 / 1024).toFixed(2),
+        });
       }
 
       case "resetAll": {
@@ -216,6 +288,32 @@ export async function POST(request) {
     }
   } catch (err) {
     console.error("Storage API error:", err);
+    const msg = String(err?.message || err || "");
+
+    // Surface Upstash-specific failures clearly so the user knows what to fix
+    if (/quota|rate.?limit|limit.exceeded|too many requests|429/i.test(msg)) {
+      return Response.json(
+        {
+          error:
+            "Upstash quota hit: " + msg + ". " +
+            "Most likely the daily bandwidth limit (50MB on free tier). " +
+            "Check your Upstash dashboard → Metrics. " +
+            "Wait until tomorrow for reset, or upgrade plan. " +
+            "Click 'Compact storage' on the Export tab to free bandwidth going forward.",
+        },
+        { status: 429 }
+      );
+    }
+    if (/ECONNREFUSED|ETIMEDOUT|getaddrinfo|fetch failed|NetworkError/i.test(msg)) {
+      return Response.json(
+        {
+          error:
+            "Redis connection failed: " + msg + ". " +
+            "Check KV_REST_API_URL and KV_REST_API_TOKEN env vars in Vercel project settings.",
+        },
+        { status: 503 }
+      );
+    }
     return Response.json(
       { error: err.message || "Unknown error in storage" },
       { status: 500 }
