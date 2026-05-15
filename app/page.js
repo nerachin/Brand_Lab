@@ -1682,7 +1682,7 @@ function AgentWorkspace({ agent, brief, user, drafts, winnerId, upstreamLocks, w
         imagePublicUrl = imgResult.imageUrl || null; // null if Blob not configured
         imageDesc = imageDescription.trim();
       }
-      await onSaveDraft(draftName.trim(), currentDraft, imageDataUrl, imageDesc, imagePublicUrl);
+      await onSaveDraft(draftName.trim(), currentDraft, imageDataUrl, imageDesc, imagePublicUrl, imageSize);
       setDraftName("");
       setIncludeImage(false);
       setImageDescription("");
@@ -2955,7 +2955,7 @@ export default function Page() {
     }
   };
 
-  const saveDraft = async (agentId, name, content, imageDataUrl, imageDescription, imagePublicUrl) => {
+  const saveDraft = async (agentId, name, content, imageDataUrl, imageDescription, imagePublicUrl, imageSize) => {
     const draftId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const draft = {
       id: draftId,
@@ -2970,6 +2970,9 @@ export default function Page() {
       draft.imageDescription = imageDescription || "";
       if (imagePublicUrl) {
         draft.imagePublicUrl = imagePublicUrl;
+      }
+      if (imageSize) {
+        draft.imageSize = imageSize; // "1536x1024" — used by Gamma route to detect orientation
       }
     }
     try {

@@ -121,9 +121,10 @@ function buildGammaMarkdown(brief, winningDrafts, imageUrlByAgent, coverImageUrl
     lines.push("");
     lines.push(`Disrupting ${brief.incumbentName} in ${brief.industry}.`);
   }
-  // Hero cover image on title slide if one exists
+  // Hero cover image on title slide — always landscape (1536x1024), use as background
   if (coverImageUrl) {
     lines.push("");
+    lines.push("[BACKGROUND IMAGE — full bleed, text overlays in high-contrast color with subtle text shadow]");
     lines.push(coverImageUrl);
   }
   lines.push("\n---\n");
@@ -151,11 +152,18 @@ function buildGammaMarkdown(brief, winningDrafts, imageUrlByAgent, coverImageUrl
       lines.push(body);
     }
 
-    // Inline image URL from resolver (draft → gallery → none)
-    const imageUrl = imageUrlByAgent[agent.id];
-    if (imageUrl) {
+    // Inline image — emit with orientation hint so Gamma handles layout correctly
+    const imageEntry = imageUrlByAgent[agent.id];
+    if (imageEntry && imageEntry.url) {
       lines.push("");
-      lines.push(imageUrl);
+      if (imageEntry.orientation === "landscape") {
+        // Full-bleed background — text overlays on top
+        lines.push("[BACKGROUND IMAGE — full bleed, text overlays in high-contrast color with subtle text shadow]");
+      } else {
+        // Portrait or square — inline as side image (Gamma's default behavior is fine)
+        lines.push("[SIDE IMAGE — place to the right of the text, do not crop]");
+      }
+      lines.push(imageEntry.url);
     }
 
     lines.push("\n---\n");
@@ -184,7 +192,17 @@ function buildGammaMarkdown(brief, winningDrafts, imageUrlByAgent, coverImageUrl
  * Returns { url, source, agentId, error? } so the route can report diagnostics.
  */
 async function resolveImageForAgent({ agentId, winningDraft, agentVisuals, redis }) {
-  const result = { agentId, url: null, source: "none", error: null };
+  const result = { agentId, url: null, source: "none", orientation: null, error: null };
+
+  // Derive orientation from a "WxH" size string ("1536x1024" → "landscape")
+  const orient = (sizeStr) => {
+    if (!sizeStr || typeof sizeStr !== "string") return null;
+    const [w, h] = sizeStr.split("x").map((n) => parseInt(n, 10));
+    if (!w || !h) return null;
+    if (w > h * 1.1) return "landscape";
+    if (h > w * 1.1) return "portrait";
+    return "square";
+  };
 
   // ---- Path 1: Image attached to the winning draft ----
   if (winningDraft) {
@@ -199,18 +217,18 @@ async function resolveImageForAgent({ agentId, winningDraft, agentVisuals, redis
         // is no longer needed and just bloats Redis (preventing future mgets).
         const updated = { ...winningDraft, imagePublicUrl: fresh, imageDataUrl: null };
         await redis.set(`draft:${winningDraft.agentId}:${winningDraft.id}`, JSON.stringify(updated));
-        return { ...result, url: fresh, source: "draft" };
+        return { ...result, url: fresh, source: "draft", orientation: orient(winningDraft.imageSize) };
       } catch (e) {
         // Re-upload failed — try existing URL if any
         if (winningDraft.imagePublicUrl) {
-          return { ...result, url: winningDraft.imagePublicUrl, source: "draft-cached", error: `re-upload failed: ${e.message}` };
+          return { ...result, url: winningDraft.imagePublicUrl, source: "draft-cached", orientation: orient(winningDraft.imageSize), error: `re-upload failed: ${e.message}` };
         }
         // Fall through to gallery
         result.error = `draft image upload failed: ${e.message}`;
       }
     } else if (winningDraft.imagePublicUrl) {
       // Public URL but no base64 — trust it and hope it's still valid
-      return { ...result, url: winningDraft.imagePublicUrl, source: "draft-cached" };
+      return { ...result, url: winningDraft.imagePublicUrl, source: "draft-cached", orientation: orient(winningDraft.imageSize) };
     }
   }
 
@@ -228,15 +246,15 @@ async function resolveImageForAgent({ agentId, winningDraft, agentVisuals, redis
         // STRIP base64 here too — public URL is enough going forward
         const updated = { ...latest, imageUrl: fresh, imageDataUrl: null };
         await redis.set(`visual:${latest.agentId}:${latest.id}`, JSON.stringify(updated));
-        return { ...result, url: fresh, source: "gallery" };
+        return { ...result, url: fresh, source: "gallery", orientation: orient(latest.size) };
       } catch (e) {
         if (latest.imageUrl) {
-          return { ...result, url: latest.imageUrl, source: "gallery-cached", error: `re-upload failed: ${e.message}` };
+          return { ...result, url: latest.imageUrl, source: "gallery-cached", orientation: orient(latest.size), error: `re-upload failed: ${e.message}` };
         }
         return { ...result, source: "none", error: `gallery image upload failed: ${e.message}` };
       }
     } else if (latest.imageUrl) {
-      return { ...result, url: latest.imageUrl, source: "gallery-cached" };
+      return { ...result, url: latest.imageUrl, source: "gallery-cached", orientation: orient(latest.size) };
     }
   }
 
@@ -348,12 +366,16 @@ export async function POST(request) {
         });
 
         if (resolution.url) {
-          imageUrlByAgent[agent.id] = resolution.url;
+          imageUrlByAgent[agent.id] = {
+            url: resolution.url,
+            orientation: resolution.orientation || "landscape", // safe default — most images are landscape
+          };
         }
         imageDiagnostics.push({
           agentId: agent.id,
           agentName: agent.name,
           source: resolution.source, // "draft" | "draft-cached" | "gallery" | "gallery-cached" | "none"
+          orientation: resolution.orientation,
           ...(resolution.error ? { error: resolution.error } : {}),
         });
       }
@@ -405,24 +427,50 @@ export async function POST(request) {
         },
         exportAs: "pptx",
         additionalInstructions: [
-          "STRICT DESIGN CONSTRAINTS — enforce across every card:",
+          "STRICT DESIGN CONSTRAINTS — enforce across every card. NON-NEGOTIABLE.",
           "",
-          "Typography: use ONE typeface family for all cards. Headlines in a serif, body in the same serif (or in ONE complementary sans-serif). Do NOT mix three or more type families across the deck.",
-          "Type sizes: maximum three sizes total across the deck — display (headline), body, caption. Do not vary headline size from card to card.",
+          "═══ TYPOGRAPHY (HIGHEST PRIORITY — most decks fail here) ═══",
+          "EXACTLY TWO type sizes across the ENTIRE deck. Not three. Not four. TWO.",
+          "  · SIZE 1 (display): used ONLY for the slide headline (the # H1). Same size on every slide. Roughly 48pt.",
+          "  · SIZE 2 (body): used for EVERYTHING else — pull-quotes, body text, captions, footers, attribution, lists. Roughly 18pt.",
+          "Do NOT create a third size for pull-quotes. Pull-quotes use SIZE 2 in italic, not in larger type.",
+          "Do NOT create a third size for captions or footnotes. They use SIZE 2 (same as body).",
+          "Do NOT vary headline size from slide to slide — every # H1 is identical in size.",
+          "Bold and italic are weight/style changes, NEVER size changes. A bolded word is the same size as the words around it.",
+          "ONE typeface family for the whole deck. ONE. If you must pair, use ONE serif for headlines and ONE complementary sans for body — and stop there.",
           "",
-          "Palette: restrained, maximum 2 accent colors plus neutrals (cream/bone/ink). The same accent color used consistently for emphasis. NO rainbow, NO per-card color shifts, NO gradient backgrounds.",
+          "═══ BACKGROUND IMAGE HANDLING ═══",
+          "When a slide contains the literal text '[BACKGROUND IMAGE — full bleed, text overlays in high-contrast color with subtle text shadow]' followed by an image URL:",
+          "  · The image becomes the FULL-BLEED background of the slide (cover the entire slide edge-to-edge, no margins).",
+          "  · The image is NOT shown as a side panel or inline figure.",
+          "  · ALL text (headline, pull-quote, body) overlays on TOP of the image.",
+          "  · Text color is automatically chosen for high contrast against the image — if the image is dark, text is off-white (#F4F2EE). If the image is light, text is deep ink (#1A1A1A).",
+          "  · Apply a SUBTLE text-shadow or scrim (15-25% black overlay on the image, behind the text) to guarantee legibility on every slide.",
+          "  · DO NOT print the literal '[BACKGROUND IMAGE...]' marker on the slide — it is metadata. Strip it.",
+          "  · DO NOT print the image URL as visible text — it is metadata. Strip it.",
+          "When a slide contains '[SIDE IMAGE — place to the right of the text, do not crop]':",
+          "  · The image goes on the right half of the slide, text on the left half.",
+          "  · DO NOT print the marker as visible text. Strip it.",
           "",
-          "Layout: consistent across cards. Bold headline at top, supporting body below, image to the right when one is present. Same composition logic on every card — do not let Gamma choose a different layout per card.",
+          "═══ PALETTE ═══",
+          "Restrained. Maximum 2 accent colors plus neutrals (cream/bone/ink/charcoal). The same accent used consistently for emphasis. NO rainbow, NO per-card color shifts, NO gradient backgrounds, NO color drift between slides.",
           "",
-          "Density: each card carries ONE key idea. Generous whitespace. Body text capped at ~40 words. No card should feel crowded.",
+          "═══ LAYOUT ═══",
+          "Identical composition logic across cards of the same type (background-image cards look alike; side-image cards look alike). Do not let Gamma choose a different layout per card.",
           "",
-          "Pull-quotes: render blockquote lines (lines starting with '>') as a single large italic pull-quote — that line IS the slide's hero text. Do not wrap it with extra body underneath.",
+          "═══ DENSITY ═══",
+          "Each card carries ONE key idea. Generous whitespace. Body text capped at ~40 words. No card should feel crowded.",
           "",
-          "Forbidden: emojis, decorative icons, geometric shapes, background patterns, textures, stock photography, illustration filler, oversaturated color, AI-template gloss, startup-deck aesthetics.",
+          "═══ PULL-QUOTES ═══",
+          "Lines starting with '>' render as italicized body-size text — visually heroic via italic emphasis and generous whitespace around them, NOT by enlarging the type. The pull-quote IS the slide's hero message. Do not append more body text underneath.",
           "",
-          "Register: think Aesop, Cereal Magazine, MIT Sloan Review, A24 — NOT pitch deck, NOT corporate template, NOT consumer-app marketing.",
+          "═══ FORBIDDEN ═══",
+          "Emojis, decorative icons, geometric shapes, background patterns, textures, stock photography, illustration filler, oversaturated color, AI-template gloss, startup-deck aesthetics, bullet-point clutter, drop shadows on type (other than the subtle scrim on background-image slides), text boxes with colored fills, rounded-corner cards within cards.",
           "",
-          "This is an MBA strategy capstone presented to professors. Restraint over novelty. Confidence over decoration.",
+          "═══ REGISTER ═══",
+          "Aesop, Cereal Magazine, MIT Sloan Review, A24 — NOT pitch deck, NOT corporate template, NOT consumer-app marketing.",
+          "",
+          "This is an MBA strategy capstone presented to professors. Restraint over novelty. Confidence over decoration. Two type sizes, period.",
         ].join("\n"),
         ...(themeId ? { themeId } : {}),
       };
